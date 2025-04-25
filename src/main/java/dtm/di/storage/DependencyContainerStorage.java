@@ -589,7 +589,7 @@ public class DependencyContainerStorage implements DependencyContainer {
                         try {
                             registerExternalBeen(configurationsClass, methodsList);
                         } catch (InvalidClassRegistrationException e) {
-                            throw new RuntimeException(e);
+                            throw new DependencyContainerRuntimeException(e);
                         }
                     }
                 }));
@@ -687,7 +687,7 @@ public class DependencyContainerStorage implements DependencyContainer {
             Constructor<?> chosenConstructor = Arrays.stream(constructors)
                     .max(Comparator.comparingInt(Constructor::getParameterCount))
                     .orElseThrow(() -> new Exception("Nenhum construtor encontrado para " + clazz.getName()));
-
+        
             Parameter[] parameters = chosenConstructor.getParameters();
             Object[] args = Arrays.stream(parameters)
                     .map(this::getDependecyObjectByParam)
