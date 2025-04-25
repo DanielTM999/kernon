@@ -688,7 +688,6 @@ public class DependencyContainerStorage implements DependencyContainer {
                     .max(Comparator.comparingInt(Constructor::getParameterCount))
                     .orElseThrow(() -> new Exception("Nenhum construtor encontrado para " + clazz.getName()));
 
-            Class<?>[] parameterTypes = chosenConstructor.getParameterTypes();
             Parameter[] parameters = chosenConstructor.getParameters();
             Object[] args = Arrays.stream(parameters)
                     .map(this::getDependecyObjectByParam)
