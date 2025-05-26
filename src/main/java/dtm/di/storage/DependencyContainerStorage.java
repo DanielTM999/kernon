@@ -5,6 +5,7 @@ import dtm.di.core.DependencyContainer;
 import dtm.di.exceptions.*;
 import dtm.di.prototypes.Dependency;
 import dtm.di.prototypes.LazyDependency;
+import dtm.di.prototypes.proxy.ProxyFactory;
 import dtm.di.sort.TopologicalSorter;
 import dtm.di.storage.lazy.Lazy;
 import dtm.di.storage.lazy.LazyObject;
@@ -36,7 +37,7 @@ public class DependencyContainerStorage implements DependencyContainer {
     private final Set<Class<?>> externalBeenAfter;
     private boolean childrenRegistration;
     private boolean parallelInjection;
-
+    private boolean aop;
 
     public static DependencyContainerStorage getInstance(){
         if(StaticContainer.getContainerStorage() == null){
@@ -121,6 +122,16 @@ public class DependencyContainerStorage implements DependencyContainer {
     }
 
     @Override
+    public void enableAOP() {
+        this.aop = true;
+    }
+
+    @Override
+    public void disableAOP() {
+        this.aop = false;
+    }
+
+    @Override
     public <T> T getDependency(Class<T> reference) {
         return getDependency(reference, getQualifierName(reference));
     }
@@ -142,7 +153,7 @@ public class DependencyContainerStorage implements DependencyContainer {
     public <T> T newInstance(Class<T> referenceClass) throws NewInstanceException {
         throwIfUnload();
         try{
-            return (T)createObject(referenceClass);
+            return (T)createObject(referenceClass, false);
         }catch (Exception e){
             throw new NewInstanceException(e.getMessage(), referenceClass, e);
         }
@@ -653,6 +664,10 @@ public class DependencyContainerStorage implements DependencyContainer {
     }
 
     private Object createObject(@NonNull Class<?> clazz){
+        return createObject(clazz, this.aop);
+    }
+
+    private Object createObject(@NonNull Class<?> clazz, boolean aop){
         try {
             Object instance = null;
             Constructor<?>[] constructors = clazz.getDeclaredConstructors();
@@ -664,7 +679,7 @@ public class DependencyContainerStorage implements DependencyContainer {
             }
             instance = (instance == null) ? createWithConstructor(clazz, constructors) : instance;
             injectDependencies(Objects.requireNonNull(instance));
-            return instance;
+            return (aop) ? proxyObject(instance, clazz) : instance;
         }catch (Exception e) {
             String message = "Erro ao criar Objeto "+clazz+" ==> cause: "+e.getMessage();
             System.out.println(message);
@@ -826,10 +841,11 @@ public class DependencyContainerStorage implements DependencyContainer {
     private void registerObject(@NonNull Object dependency, @NonNull String qualifier) throws InvalidClassRegistrationException {
         try {
             final Class<?> clazz = dependency.getClass();
+            final Object toRegistrate = (aop) ? proxyObject(dependency, clazz) : dependency;
             if(dependencyContainer.containsKey(clazz)) return;
             final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(clazz, new ArrayList<Dependency>());
             validQualifier(listOfDependency, qualifier, clazz);
-            DependencyObject dependencyObject = new DependencyObject(clazz, qualifier, true, () -> {return dependency;}, dependency);
+            DependencyObject dependencyObject = new DependencyObject(clazz, qualifier, true, () -> {return toRegistrate;}, toRegistrate);
             listOfDependency.add(dependencyObject);
             dependencyContainer.put(clazz, listOfDependency);
             registerSubTypes(clazz, listOfDependency);
@@ -859,6 +875,23 @@ public class DependencyContainerStorage implements DependencyContainer {
             }
         }
 
+    }
+
+    private Object proxyObject(Object realInstance, Class<?> clazz){
+        try{
+            if(executeProxy(realInstance)) return ProxyFactory.newProxyObject(realInstance, clazz);
+        }catch (Exception e){
+            System.out.println("Erro ao criar o proxy: "+e.getMessage()+" usando o objeto real.");
+        }
+
+        return realInstance;
+    }
+
+    private boolean executeProxy(Object instance){
+        if (instance instanceof DependencyContainer) {
+            return false;
+        }
+        return true;
     }
 
 }

@@ -15,6 +15,7 @@
 
         <lombok.version>1.18.38</lombok.version>
         <classfinder.version>1.0.1</classfinder.version>
+        <byte.buddy.version>1.15.10</byte.buddy.version>
     </properties>
 
     <dependencies>
@@ -28,6 +29,12 @@
             <groupId>dtm.discovery</groupId>
             <artifactId>classfinder</artifactId>
             <version>${classfinder.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>net.bytebuddy</groupId>
+            <artifactId>byte-buddy</artifactId>
+            <version>${byte.buddy.version}</version>
         </dependency>
 
     </dependencies>

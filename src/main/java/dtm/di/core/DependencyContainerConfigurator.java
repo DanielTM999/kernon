@@ -6,4 +6,7 @@ public interface DependencyContainerConfigurator {
 
     void enableParallelInjection();
     void disableParallelInjection();
+
+    void enableAOP();
+    void disableAOP();
 }
