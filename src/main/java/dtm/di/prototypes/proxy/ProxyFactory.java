@@ -1,5 +1,6 @@
 package dtm.di.prototypes.proxy;
 
+import dtm.di.core.DependencyContainer;
 import lombok.NonNull;
 import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.dynamic.DynamicType;
@@ -10,17 +11,20 @@ import java.lang.reflect.Constructor;
 
 public class ProxyFactory {
 
+    private final DependencyContainer dependencyContainer;
     private final Object instance;
     private final Class<?> clazz;
 
-    public ProxyFactory(@NonNull Object instance){
+    public ProxyFactory(@NonNull Object instance, DependencyContainer dependencyContainer){
         this.instance = instance;
         this.clazz = instance.getClass();
+        this.dependencyContainer = dependencyContainer;
     }
 
-    public ProxyFactory(@NonNull Object instance, @NonNull Class<?> clazz){
+    public ProxyFactory(@NonNull Object instance, @NonNull Class<?> clazz, DependencyContainer dependencyContainer){
         this.instance = instance;
         this.clazz = clazz;
+        this.dependencyContainer = dependencyContainer;
     }
 
     public Object proxyObject() throws Exception {
@@ -32,7 +36,7 @@ public class ProxyFactory {
         try (DynamicType.Unloaded<?> unloaded = new ByteBuddy()
                 .subclass(clazz)
                 .method(ElementMatchers.isDeclaredBy(clazz))
-                .intercept(MethodDelegation.to(new ObjectInterceptor(instance)))
+                .intercept(MethodDelegation.to(new ObjectInterceptor(instance, dependencyContainer)))
                 .make()) {
 
             Class<?> proxyClass = unloaded
@@ -46,8 +50,8 @@ public class ProxyFactory {
         }
     }
 
-    public static Object newProxyObject(@NonNull Object instance, @NonNull Class<?> clazz) throws Exception {
-        ProxyFactory proxyFactory = new ProxyFactory(instance, clazz);
+    public static Object newProxyObject(@NonNull Object instance, @NonNull Class<?> clazz, DependencyContainer dependencyContainer) throws Exception {
+        ProxyFactory proxyFactory = new ProxyFactory(instance, clazz, dependencyContainer);
         return proxyFactory.proxyObject();
     }
 

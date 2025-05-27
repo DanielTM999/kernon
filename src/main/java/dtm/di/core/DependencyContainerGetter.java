@@ -4,6 +4,7 @@ import dtm.di.exceptions.NewInstanceException;
 import dtm.di.prototypes.Dependency;
 
 import java.util.List;
+import java.util.Set;
 
 public interface DependencyContainerGetter {
     <T> T getDependency(Class<T> reference);
@@ -14,4 +15,6 @@ public interface DependencyContainerGetter {
     void injectDependencies(Object instance);
 
     List<Dependency> getRegisteredDependencies();
+
+    Set<Class<?>> getLoadedSystemClasses();
 }

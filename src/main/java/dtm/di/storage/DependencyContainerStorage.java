@@ -35,19 +35,29 @@ public class DependencyContainerStorage implements DependencyContainer {
     private final Set<Class<?>> loadedSystemClasses;
     private final Set<Class<?>> externalBeenBefore;
     private final Set<Class<?>> externalBeenAfter;
+    private final Class<?> mainClass;
+    private ClassFinderConfigurations classFinderConfigurations;
     private boolean childrenRegistration;
     private boolean parallelInjection;
     private boolean aop;
 
-    public static DependencyContainerStorage getInstance(){
+    public static DependencyContainerStorage getInstance(Class<?> mainClass){
         if(StaticContainer.getContainerStorage() == null){
-            StaticContainer.setContainerStorage(new DependencyContainerStorage());
+            StaticContainer.setContainerStorage(new DependencyContainerStorage(mainClass));
         }
 
         return StaticContainer.getContainerStorage();
     }
 
-    private DependencyContainerStorage(){
+    public static DependencyContainerStorage getLoadedInstance(){
+        if(StaticContainer.getContainerStorage() == null){
+            throw new UnloadError("DependencyContainerStorage unload");
+        }
+
+        return StaticContainer.getContainerStorage();
+    }
+
+    private DependencyContainerStorage(Class<?> mainClass){
         this.dependencyContainer = new ConcurrentHashMap<>();
         this.loaded = new AtomicBoolean(false);
         this.classFinder = new ClassFinderService();
@@ -58,6 +68,8 @@ public class DependencyContainerStorage implements DependencyContainer {
         this.loadedSystemClasses = ConcurrentHashMap.newKeySet();
         this.externalBeenBefore = ConcurrentHashMap.newKeySet();
         this.externalBeenAfter = ConcurrentHashMap.newKeySet();
+        this.classFinderConfigurations = getFindConfigurations();
+        this.mainClass = mainClass;
     }
 
 
@@ -66,15 +78,15 @@ public class DependencyContainerStorage implements DependencyContainer {
         try{
             if(isLoaded()) return;
             loadByPluginFolder();
-            loadedSystemClasses.addAll(classFinder.find(getFindConfigurations(null)));
+            loadSystemClasses();
             filterServiceClass();
             filterExternalsBeens();
+            filterExternalConfigurations();
             loaded.set(true);
             selfInjection();
             registerExternalBeens(externalBeenBefore);
             loadBeens();
             registerExternalBeens(externalBeenAfter);
-            loadedSystemClasses.forEach(System.out::println);
         }catch (Exception e){
            throw new UnloadError("load error", e);
         }
@@ -205,6 +217,11 @@ public class DependencyContainerStorage implements DependencyContainer {
                         (existing, replacement) -> existing
                 ))
                 .values());
+    }
+
+    @Override
+    public Set<Class<?>> getLoadedSystemClasses() {
+        return loadedSystemClasses;
     }
 
     @Override
@@ -351,49 +368,8 @@ public class DependencyContainerStorage implements DependencyContainer {
         }
     }
 
-    private ClassFinderConfigurations getFindConfigurations(Class<? extends Annotation> anotation){
-        return new ClassFinderConfigurations() {
-            @Override
-            public boolean getAllElements() {
-                return ClassFinderConfigurations.super.getAllElements();
-            }
-
-            @Override
-            public boolean getAnonimousClass() {
-                return false;
-            }
-
-            @Override
-            public boolean ignoreSubJars() {
-                return ClassFinderConfigurations.super.ignoreSubJars();
-            }
-
-            @Override
-            public List<String> getIgnorePackges() {
-                List<String> strings = ClassFinderConfigurations.super.getIgnorePackges();
-                strings.add("net.bytebuddy");
-                strings.add("lombok");
-                return strings;
-            }
-
-            @Override
-            public List<String> getIgnoreJarsTerms() {
-                List<String> jarList = ClassFinderConfigurations.super.getIgnoreJarsTerms();
-                jarList.add("lombok");
-                jarList.add("byte-buddy");
-                return jarList;
-            }
-
-            @Override
-            public ClassFinderErrorHandler getHandler() {
-                return (error) -> {};
-            }
-
-            @Override
-            public Class<? extends Annotation> getFilterByAnnotation() {
-                return anotation;
-            }
-        };
+    private ClassFinderConfigurations getFindConfigurations(){
+        return new ClassFinderConfigurationsStorage();
     }
 
     private String getQualifierName(@NonNull Class<?> clazz){
@@ -903,7 +879,7 @@ public class DependencyContainerStorage implements DependencyContainer {
 
     private Object proxyObject(Object realInstance, Class<?> clazz){
         try{
-            if(executeProxy(realInstance)) return ProxyFactory.newProxyObject(realInstance, clazz);
+            if(executeProxy(realInstance)) return ProxyFactory.newProxyObject(realInstance, clazz, this);
         }catch (Exception e){
             System.out.println("Erro ao criar o proxy: "+e.getMessage()+" usando o objeto real.");
         }
@@ -916,6 +892,18 @@ public class DependencyContainerStorage implements DependencyContainer {
             return false;
         }
         return true;
+    }
+
+    private void loadSystemClasses(){
+        if(mainClass != null){
+            loadedSystemClasses.addAll(classFinder.find(mainClass, classFinderConfigurations));
+        }else{
+            loadedSystemClasses.addAll(classFinder.find(classFinderConfigurations));
+        }
+    }
+
+    private void filterExternalConfigurations(){
+
     }
 
 }

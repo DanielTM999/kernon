@@ -1,6 +1,6 @@
 package dtm.di.exceptions;
 
-public class DependencyContainerException extends Exception{
+public class DependencyContainerException extends RuntimeException{
 
     public DependencyContainerException(String message){
         super(message);
