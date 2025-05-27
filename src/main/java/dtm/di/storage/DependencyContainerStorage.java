@@ -63,18 +63,21 @@ public class DependencyContainerStorage implements DependencyContainer {
 
     @Override
     public void load() throws InvalidClassRegistrationException {
-        if(isLoaded()) return;
-        if(!runInJar()) classFinder.loadByDirectory(System.getProperty("user.dir"));
-        loadByPluginFolder();
-        loadedSystemClasses.addAll(classFinder.getLoadedClass());
-        loadedSystemClasses.addAll(classFinder.find(getFindConfigurations(null)));
-        filterServiceClass();
-        filterExternalsBeens();
-        loaded.set(true);
-        selfInjection();
-        registerExternalBeens(externalBeenBefore);
-        loadBeens();
-        registerExternalBeens(externalBeenAfter);
+        try{
+            if(isLoaded()) return;
+            loadByPluginFolder();
+            loadedSystemClasses.addAll(classFinder.find(getFindConfigurations(null)));
+            filterServiceClass();
+            filterExternalsBeens();
+            loaded.set(true);
+            selfInjection();
+            registerExternalBeens(externalBeenBefore);
+            loadBeens();
+            registerExternalBeens(externalBeenAfter);
+            loadedSystemClasses.forEach(System.out::println);
+        }catch (Exception e){
+           throw new UnloadError("load error", e);
+        }
     }
 
     @Override
@@ -357,7 +360,28 @@ public class DependencyContainerStorage implements DependencyContainer {
 
             @Override
             public boolean getAnonimousClass() {
-                return ClassFinderConfigurations.super.getAnonimousClass();
+                return false;
+            }
+
+            @Override
+            public boolean ignoreSubJars() {
+                return ClassFinderConfigurations.super.ignoreSubJars();
+            }
+
+            @Override
+            public List<String> getIgnorePackges() {
+                List<String> strings = ClassFinderConfigurations.super.getIgnorePackges();
+                strings.add("net.bytebuddy");
+                strings.add("lombok");
+                return strings;
+            }
+
+            @Override
+            public List<String> getIgnoreJarsTerms() {
+                List<String> jarList = ClassFinderConfigurations.super.getIgnoreJarsTerms();
+                jarList.add("lombok");
+                jarList.add("byte-buddy");
+                return jarList;
             }
 
             @Override
