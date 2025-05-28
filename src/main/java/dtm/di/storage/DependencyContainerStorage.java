@@ -13,7 +13,9 @@ import dtm.discovery.core.ClassFinder;
 import dtm.discovery.core.ClassFinderConfigurations;
 import dtm.discovery.core.ClassFinderErrorHandler;
 import dtm.discovery.finder.ClassFinderService;
+import lombok.Getter;
 import lombok.NonNull;
+import lombok.Setter;
 
 import java.io.File;
 import java.lang.annotation.Annotation;
@@ -36,10 +38,13 @@ public class DependencyContainerStorage implements DependencyContainer {
     private final Set<Class<?>> externalBeenBefore;
     private final Set<Class<?>> externalBeenAfter;
     private final Class<?> mainClass;
-    private ClassFinderConfigurations classFinderConfigurations;
     private boolean childrenRegistration;
     private boolean parallelInjection;
     private boolean aop;
+
+    @Getter
+    @Setter
+    private ClassFinderConfigurations classFinderConfigurations;
 
     public static DependencyContainerStorage getInstance(Class<?> mainClass){
         if(StaticContainer.getContainerStorage() == null){
@@ -95,9 +100,13 @@ public class DependencyContainerStorage implements DependencyContainer {
     @Override
     public void unload() {
         loaded.set(false);
+        this.classFinderConfigurations = getFindConfigurations();
         loadedSystemClasses.clear();
         serviceBeensDefinition.clear();
         dependencyContainer.clear();
+        foldersToLoad.clear();
+        externalBeenBefore.clear();
+        externalBeenAfter.clear();
     }
 
     @Override

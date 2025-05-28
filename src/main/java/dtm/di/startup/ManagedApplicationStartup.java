@@ -1,22 +1,22 @@
 package dtm.di.startup;
 
+import dtm.di.annotations.aop.DisableAop;
 import dtm.di.annotations.boot.ApplicationBoot;
 import dtm.di.annotations.boot.LifecycleHook;
 import dtm.di.annotations.boot.OnBoot;
+import dtm.di.annotations.scanner.PackageScanIgnore;
 import dtm.di.core.DependencyContainer;
 import dtm.di.exceptions.InvalidClassRegistrationException;
 import dtm.di.exceptions.boot.InvalidBootException;
 import dtm.di.storage.DependencyContainerStorage;
+import dtm.discovery.core.ClassFinderConfigurations;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.util.EnumMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -28,6 +28,7 @@ public class ManagedApplicationStartup {
     private static Class<?> mainClass;
     private static Map<LifecycleHook.Event, List<Method>> eventMethodMap;
     private static boolean logEnabled;
+    private static boolean aopEnable = true;
 
 
     public static void doRun(){
@@ -55,6 +56,9 @@ public class ManagedApplicationStartup {
 
         runMethod = getRunMethod();
         logInfo("Método @OnBoot encontrado: {}", runMethod.getName());
+
+        aopEnable = aopIsEnable();
+        logInfo("AOP: {}", ((aopEnable) ? "Habilitado" : "Desativado com @DisableAop"));
 
         runAsync();
         logInfo("doRun() finalizado");
@@ -107,7 +111,10 @@ public class ManagedApplicationStartup {
     }
 
     private static DependencyContainer getDependencyContainer(){
-        return DependencyContainerStorage.getInstance(mainClass);
+        DependencyContainerStorage dependencyContainerStorage = DependencyContainerStorage.getInstance(mainClass);
+        applyPeckageScan(dependencyContainerStorage.getClassFinderConfigurations());
+
+        return dependencyContainerStorage;
     }
 
     private static Map<LifecycleHook.Event, List<Method>> getEventMethodMap() {
@@ -166,7 +173,7 @@ public class ManagedApplicationStartup {
             try {
                 logLifecycle("CONTAINER_LOAD", true);
                 dependencyContainer.enableParallelInjection();
-                dependencyContainer.enableAOP();
+                if(aopEnable) dependencyContainer.enableAOP();
                 dependencyContainer.load();
                 logLifecycle("CONTAINER_LOAD", false);
             } catch (InvalidClassRegistrationException e) {
@@ -255,6 +262,32 @@ public class ManagedApplicationStartup {
         return cause;
     }
 
+    private static boolean aopIsEnable(){
+        return !bootableClass.isAnnotationPresent(DisableAop.class);
+    }
 
+    private static void applyPeckageScan(ClassFinderConfigurations classFinderConfigurations){
+        PackageScanIgnore[] packageScanIgnoreList = bootableClass.getAnnotationsByType(PackageScanIgnore.class);
+        for (PackageScanIgnore packageScanIgnore : packageScanIgnoreList){
+            PackageScanIgnore.ScanType scanType = packageScanIgnore.scanType();
+            List<String> ignorePackage = Arrays.asList(packageScanIgnore.ignorePackage());
+            String scanElement = packageScanIgnore.scanElement();
+
+            if(scanElement.equalsIgnoreCase("jar")){
+                add(classFinderConfigurations.getIgnoreJarsTerms(), ignorePackage, scanType);
+            }else{
+                add(classFinderConfigurations.getIgnorePackges(), ignorePackage, scanType);
+            }
+        }
+    }
+
+    private static void add(List<String> base, List<String> toAdd, PackageScanIgnore.ScanType scanType){
+        if(scanType == PackageScanIgnore.ScanType.INCREMENT){
+            base.addAll(toAdd);
+        }else if(scanType == PackageScanIgnore.ScanType.REPLACE){
+            base.clear();
+            base.addAll(toAdd);
+        }
+    }
 
 }

@@ -52,11 +52,12 @@ public class ClassFinderConfigurationsStorage implements ClassFinderConfiguratio
         jars.add("lombok");
         jars.add("byte-buddy");
         jars.add("logback-classic");
+        jars.add("slf4j-api");
 
         return new ConfigData(
                 defaults.getAllElements(),
                 true,
-                defaults.ignoreSubJars(),
+                false,
                 packages,
                 jars,
                 (err) -> {},
