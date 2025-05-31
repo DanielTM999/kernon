@@ -268,9 +268,10 @@ public class ManagedApplicationStartup {
 
     private static void applyPeckageScan(ClassFinderConfigurations classFinderConfigurations){
         PackageScanIgnore[] packageScanIgnoreList = bootableClass.getAnnotationsByType(PackageScanIgnore.class);
+
         for (PackageScanIgnore packageScanIgnore : packageScanIgnoreList){
             PackageScanIgnore.ScanType scanType = packageScanIgnore.scanType();
-            List<String> ignorePackage = Arrays.asList(packageScanIgnore.ignorePackage());
+            Set<String> ignorePackage = new HashSet<>(Arrays.asList(packageScanIgnore.ignorePackage()));
             String scanElement = packageScanIgnore.scanElement();
 
             if(scanElement.equalsIgnoreCase("jar")){
@@ -281,7 +282,7 @@ public class ManagedApplicationStartup {
         }
     }
 
-    private static void add(List<String> base, List<String> toAdd, PackageScanIgnore.ScanType scanType){
+    private static void add(List<String> base, Set<String> toAdd, PackageScanIgnore.ScanType scanType){
         if(scanType == PackageScanIgnore.ScanType.INCREMENT){
             base.addAll(toAdd);
         }else if(scanType == PackageScanIgnore.ScanType.REPLACE){

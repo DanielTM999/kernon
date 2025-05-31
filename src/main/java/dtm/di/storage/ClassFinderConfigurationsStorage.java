@@ -43,12 +43,12 @@ public class ClassFinderConfigurationsStorage implements ClassFinderConfiguratio
     private static ConfigData createDefaults() {
         ClassFinderConfigurations defaults = new ClassFinderConfigurations() {};
 
-        List<String> packages = new ArrayList<>(defaults.getIgnorePackges());
+        List<String> packages = Collections.synchronizedList(new ArrayList<>(defaults.getIgnorePackges()));
         packages.add("net.bytebuddy");
         packages.add("ch.qos.logback");
         packages.add("lombok");
 
-        List<String> jars = new ArrayList<>(defaults.getIgnoreJarsTerms());
+        List<String> jars = Collections.synchronizedList(new ArrayList<>(defaults.getIgnoreJarsTerms()));
         jars.add("lombok");
         jars.add("byte-buddy");
         jars.add("logback-classic");

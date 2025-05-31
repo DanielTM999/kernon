@@ -23,7 +23,7 @@ public class DependencyObject extends Dependency {
     private boolean singleton;
 
     @ToString.Exclude
-    private Supplier<Object> creatorFunction;
+    private Supplier<?> creatorFunction;
 
     @ToString.Exclude
     private Object singletonInstance;

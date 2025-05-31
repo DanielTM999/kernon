@@ -5,6 +5,7 @@ import dtm.di.core.DependencyContainer;
 import dtm.di.exceptions.*;
 import dtm.di.prototypes.Dependency;
 import dtm.di.prototypes.LazyDependency;
+import dtm.di.prototypes.RegistrationFunction;
 import dtm.di.prototypes.proxy.ProxyFactory;
 import dtm.di.sort.TopologicalSorter;
 import dtm.di.storage.lazy.Lazy;
@@ -241,6 +242,11 @@ public class DependencyContainerStorage implements DependencyContainer {
     @Override
     public void registerDependency(Object dependency) throws InvalidClassRegistrationException {
         registerObject(dependency);
+    }
+
+    @Override
+    public <T> void registerDependency(RegistrationFunction<T> registrationFunction) throws InvalidClassRegistrationException {
+        registerObject(registrationFunction);
     }
 
     @Override
@@ -862,6 +868,37 @@ public class DependencyContainerStorage implements DependencyContainer {
             throw new InvalidClassRegistrationException(
                     "Erro ao criar a dependencia: " + dependency.getClass()+ " ==> causa: "+e.getMessage(),
                     dependency.getClass(),
+                    e
+            );
+        }
+    }
+
+    private void registerObject(@NonNull RegistrationFunction<?> registrationFunction){
+        final Class<?> referenceClass = registrationFunction.getReferenceClass();
+        final String qualifier = (registrationFunction.getQualifier().isEmpty()) ? "default" : registrationFunction.getQualifier();
+
+        try{
+            Supplier<?> activatorFunction;
+            if(aop){
+                activatorFunction = () -> {
+                    Object instance = registrationFunction.getFunction().get();
+                    if(instance == null) throw new NullPointerException("Intancia invalida para "+referenceClass);
+                    return proxyObject(instance, instance.getClass());
+                };
+            }else{
+                activatorFunction = registrationFunction.getFunction();
+            }
+            if(dependencyContainer.containsKey(referenceClass)) return;
+            final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(referenceClass, new ArrayList<Dependency>());
+            validQualifier(listOfDependency, qualifier, referenceClass);
+            DependencyObject dependencyObject = new DependencyObject(referenceClass, qualifier, false, activatorFunction, activatorFunction);
+            listOfDependency.add(dependencyObject);
+            dependencyContainer.put(referenceClass, listOfDependency);
+            registerSubTypes(referenceClass, listOfDependency);
+        }catch (Exception e) {
+            throw new InvalidClassRegistrationException(
+                    "Erro ao criar a dependencia: " + referenceClass+ " ==> causa: "+e.getMessage(),
+                    referenceClass,
                     e
             );
         }

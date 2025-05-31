@@ -8,8 +8,13 @@ import net.bytebuddy.implementation.MethodDelegation;
 import net.bytebuddy.matcher.ElementMatchers;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ProxyFactory {
+
+    private static final Map<Class<?>, Class<?>> proxyCache = new ConcurrentHashMap<>();
 
     private final DependencyContainer dependencyContainer;
     private final Object instance;
@@ -28,26 +33,37 @@ public class ProxyFactory {
     }
 
     public Object proxyObject() throws Exception {
-
+        String interceptorFieldName = "___interceptor";
         Constructor<?> constructor = getConstructorWithLeastParameters(clazz);
         constructor.setAccessible(true);
         Object[] args = buildDummyArgs(constructor.getParameterTypes());
 
-        try (DynamicType.Unloaded<?> unloaded = new ByteBuddy()
-                .subclass(clazz)
-                .method(ElementMatchers.isDeclaredBy(clazz))
-                .intercept(MethodDelegation.to(new ObjectInterceptor(instance, dependencyContainer)))
-                .make()) {
 
-            Class<?> proxyClass = unloaded
-                    .load(clazz.getClassLoader())
-                    .getLoaded();
+        Class<?> proxyClass = proxyCache.computeIfAbsent(clazz, cls -> {
+            try (DynamicType.Unloaded<?> unloaded = new ByteBuddy()
+                    .subclass(cls)
+                    .defineField(interceptorFieldName, ObjectInterceptor.class)
+                    .method(ElementMatchers.isDeclaredBy(cls))
+                    .intercept(MethodDelegation.toField(interceptorFieldName))
+                    .make()) {
 
-            Constructor<?> proxyConstructor = proxyClass.getDeclaredConstructor(constructor.getParameterTypes());
-            proxyConstructor.setAccessible(true);
+                return unloaded
+                        .load(cls.getClassLoader())
+                        .getLoaded();
 
-            return proxyConstructor.newInstance(args);
-        }
+            } catch (Exception e) {
+                throw new RuntimeException("Erro ao criar proxy para " + cls, e);
+            }
+        });
+
+        Constructor<?> proxyConstructor = proxyClass.getDeclaredConstructor(constructor.getParameterTypes());
+        proxyConstructor.setAccessible(true);
+        Object proxyInstance = proxyConstructor.newInstance(args);
+        Field interceptorField = proxyClass.getDeclaredField(interceptorFieldName);
+        interceptorField.setAccessible(true);
+        interceptorField.set(proxyInstance, new ObjectInterceptor(instance, dependencyContainer));
+
+        return proxyInstance;
     }
 
     public static Object newProxyObject(@NonNull Object instance, @NonNull Class<?> clazz, DependencyContainer dependencyContainer) throws Exception {
