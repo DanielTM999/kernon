@@ -1,20 +1,18 @@
 package dtm.di.aop;
 
-import dtm.di.annotations.aop.AfterExecution;
-import dtm.di.annotations.aop.Aspect;
-import dtm.di.annotations.aop.BeforeExecution;
-import dtm.di.annotations.aop.Pointcut;
+import dtm.di.annotations.aop.*;
 import dtm.di.core.DependencyContainer;
 import dtm.di.core.aop.AopUtils;
 import dtm.di.exceptions.AspectNewInstanceException;
 
+import java.lang.reflect.Parameter;
 import java.util.concurrent.ConcurrentHashMap;
 import java.lang.reflect.Method;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 public class AopProxyUtils extends AopUtils {
-    private static AopProxyUtils aopProxyUtils;
+    private static volatile AopProxyUtils aopProxyUtils;
 
     private final DependencyContainer dependencyContainer;
     private final Set<AspectHandler> handlers;
@@ -28,26 +26,20 @@ public class AopProxyUtils extends AopUtils {
     @Override
     public void applyBefore(Method method, Object[] args, Object proxy) {
         for (AspectHandler handler : handlers) {
-            boolean apply = true;
-            if (handler.pointcut != null) {
-                try {
-                    handler.pointcut.setAccessible(true);
-                    Object result = handler.pointcut.invoke(handler.instance, method, args, proxy);
-                    if (result instanceof Boolean resultPointCut) {
-                        apply = resultPointCut;
-                    }
-                } catch (Exception e) {
-                    continue;
-                }
-            }
+            boolean apply = shouldApplyHandler(handler, method, args, proxy);
 
-            if (!apply) continue;
+            if(!apply) continue;
 
             Method before = handler.before;
             if(before != null){
                 try {
-                    before.setAccessible(true);
-                    before.invoke(handler.instance, method, args, proxy);
+                    executeMethod(
+                            handler.instance,
+                            before,
+                            method,
+                            args,
+                            proxy
+                    );
                 } catch (Exception e) {
                     String className = (handler.instance != null) ?  handler.instance.getClass().toString() : method.getName();
                     throw new RuntimeException("Erro no método @BeforeExecution: "+className, e);
@@ -62,40 +54,33 @@ public class AopProxyUtils extends AopUtils {
         Object result = currentResult;
 
         for (AspectHandler handler : handlers) {
-            boolean apply = true;
+            boolean apply = shouldApplyHandler(handler, method, args, proxy);
 
-            if (handler.pointcut != null) {
-                try {
-                    handler.pointcut.setAccessible(true);
-                    Object pointcutResult = handler.pointcut.invoke(handler.instance, method, args, proxy);
-                    if (pointcutResult instanceof Boolean b && !b) continue;
-                } catch (Exception e) {
-                    continue;
-                }
-            }
+            if(!apply) continue;
 
             Method after = handler.after;
             if (after != null) {
                 try {
                     after.setAccessible(true);
-                    Object newResult = after.invoke(handler.instance, method, args, proxy, result);
-
+                    Object newResult = executeMethod(
+                            handler.instance,
+                            after,
+                            method,
+                            args,
+                            proxy,
+                            result
+                    );
                     if (newResult != null && method.getReturnType().isAssignableFrom(newResult.getClass())) {
                         result = newResult;
                     }
                 } catch (Exception e) {
                     String className = (handler.instance != null) ? handler.instance.getClass().toString() : method.getName();
-                    throw new RuntimeException("Erro no método @BeforeExecution: "+className, e);
+                    throw new RuntimeException("Erro no método @AfterExecution: "+className, e);
                 }
             }
         }
 
         return result;
-    }
-
-    public static AopUtils getInstance(DependencyContainer dependencyContainer){
-        if(aopProxyUtils == null) aopProxyUtils = new AopProxyUtils(dependencyContainer);
-        return aopProxyUtils;
     }
 
     private void createAspects(){
@@ -125,8 +110,74 @@ public class AopProxyUtils extends AopUtils {
         }
     }
 
+    private boolean shouldApplyHandler(AspectHandler handler, Method method, Object[] args, Object proxy) {
+        if (handler.pointcut == null) return true;
+        try {
+            Object result = executeMethod(handler.instance, handler.pointcut, method, args, proxy);
+            return result instanceof Boolean b && b;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+
+    public Object executeMethod(
+            Object instance,
+            Method methodExecute,
+            Method methodArgs,
+            Object[] args,
+            Object proxy
+    ) throws Exception{
+        return executeMethod(instance, methodExecute, methodArgs, args, proxy, null);
+    }
+
+    public Object executeMethod(
+            Object instance,
+            Method methodExecute,
+            Method methodArgs,
+            Object[] args,
+            Object proxy,
+            Object currentResult
+    ) throws Exception{
+        methodExecute.setAccessible(true);
+        Parameter[] parameters = methodExecute.getParameters();
+        Object[] invokeArgs = new Object[parameters.length];
+
+        for (int i = 0; i < parameters.length; i++) {
+            Parameter parameter = parameters[i];
+            Class<?> paramType = parameter.getType();
+
+            boolean isProxy = parameter.isAnnotationPresent(ProxyInstance.class);
+            boolean isResult = parameter.isAnnotationPresent(ResultProxy.class);
+
+            if (isProxy) {
+                invokeArgs[i] = proxy;
+            } else if (isResult) {
+                invokeArgs[i] = currentResult;
+            } else if (Method.class.isAssignableFrom(paramType)) {
+                invokeArgs[i] = methodArgs;
+            } else if (paramType.isArray() && paramType.getComponentType().equals(Object.class)) {
+                invokeArgs[i] = args;
+            } else {
+                invokeArgs[i] = null;
+            }
+        }
+
+        return methodExecute.invoke(instance, invokeArgs);
+    }
 
     public record AspectHandler(Object instance, Method pointcut, Method before, Method after) {
+    }
+
+    public static AopUtils getInstance(DependencyContainer dependencyContainer) {
+        if (aopProxyUtils == null) {
+            synchronized (AopProxyUtils.class) {
+                if (aopProxyUtils == null) {
+                    aopProxyUtils = new AopProxyUtils(dependencyContainer);
+                }
+            }
+        }
+        return aopProxyUtils;
     }
 
 }

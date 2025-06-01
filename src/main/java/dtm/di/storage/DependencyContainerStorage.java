@@ -166,7 +166,7 @@ public class DependencyContainerStorage implements DependencyContainer {
         throwIfUnload();
         try{
             final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(reference, Collections.emptyList());
-            final Dependency dependencyObject = Objects.requireNonNull(listOfDependency).stream().filter(d -> d.getQualifier().equals(qualifier)).findFirst().orElseThrow();
+            final Dependency dependencyObject = listOfDependency.stream().filter(d -> d.getQualifier().equals(qualifier)).findFirst().orElseThrow();
             Object instance = dependencyObject.getDependency();
             return reference.cast(instance);
         }catch (Exception e){
@@ -390,7 +390,7 @@ public class DependencyContainerStorage implements DependencyContainer {
     private String getQualifierName(@NonNull Class<?> clazz){
         if(clazz.isAnnotationPresent(Qualifier.class)){
             Qualifier qualifierAnnotation = clazz.getAnnotation(Qualifier.class);
-            return (Objects.requireNonNull(qualifierAnnotation).qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
+            return (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
         } else {
             return  "default";
         }
@@ -399,8 +399,11 @@ public class DependencyContainerStorage implements DependencyContainer {
     private String getQualifierName(@NonNull Field variable){
         if(variable.isAnnotationPresent(Qualifier.class)){
             Qualifier qualifierAnnotation = variable.getAnnotation(Qualifier.class);
-            return (Objects.requireNonNull(qualifierAnnotation).qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
-        } else {
+            return (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
+        } else if(variable.isAnnotationPresent(Inject.class)) {
+            Inject inject = variable.getAnnotation(Inject.class);
+            return (inject.qualifier() == null || inject.qualifier().isEmpty()) ? "default" : inject.qualifier();
+        }else {
             return  "default";
         }
     }
@@ -408,7 +411,7 @@ public class DependencyContainerStorage implements DependencyContainer {
     private String getQualifierName(@NonNull Parameter variable){
         if(variable.isAnnotationPresent(Qualifier.class)){
             Qualifier qualifierAnnotation = variable.getAnnotation(Qualifier.class);
-            return (Objects.requireNonNull(qualifierAnnotation).qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
+            return (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
         } else {
             return  "default";
         }
