@@ -49,6 +49,9 @@ Anote sua classe principal(a com o main(String[] args)) com `@ApplicationBoot`:
 ## Sintaxe Básica
 
 ```java
+import dtm.di.startup.ManagedApplicationStartup;
+import dtm.di.annotations.boot.ApplicationBoot;
+
 @ApplicationBoot
 public class MyApp {
     public static void main(String[] args) {
@@ -67,6 +70,9 @@ O `@ApplicationBoot` permite especificar uma classe externa para centralizar tod
 ## Sintaxe Básica
 
 ```java
+import dtm.di.startup.ManagedApplicationStartup;
+import dtm.di.annotations.boot.ApplicationBoot;
+
 @ApplicationBoot(AppBootConfig.class)  // Classe de configuração externa
 public class MainApplication {
     public static void main(String[] args) {
@@ -85,11 +91,16 @@ public class MainApplication {
 - **Compartilhamento entre projetos**: mutiplas inicializações
 
 ```java
+import dtm.di.annotations.boot.ApplicationBoot;
+
 // Projeto A
 @ApplicationBoot(SharedBootConfig.class)
 
 // Projeto B
 @ApplicationBoot(SharedBootConfig.class)
+
+//Apenas uma
+public class Main{}
 ```
 
 # Anotações de Ciclo de Vida: `@OnBoot` e `@LifecycleHook`
@@ -125,6 +136,9 @@ public class MainApplication {
 ### Exemplo Prático com Todos Eventos
 
 ```java
+import dtm.di.annotations.boot.ApplicationBoot;
+import dtm.di.annotations.boot.LifecycleHook;
+
 public class AppLifecycle {
 
     @LifecycleHook(LifecycleHook.Event.BEFORE_ALL)
