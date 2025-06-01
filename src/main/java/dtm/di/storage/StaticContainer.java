@@ -5,9 +5,10 @@ import lombok.Getter;
 class StaticContainer {
 
     @Getter
-    private static DependencyContainerStorage containerStorage;
+    private static volatile DependencyContainerStorage containerStorage;
 
-    public static void setContainerStorage(DependencyContainerStorage containerStorage) {
+    public static synchronized void setContainerStorage(DependencyContainerStorage containerStorage) {
         StaticContainer.containerStorage = containerStorage;
     }
+
 }
