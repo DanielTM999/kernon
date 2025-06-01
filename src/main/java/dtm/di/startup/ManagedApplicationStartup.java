@@ -19,6 +19,7 @@ import java.lang.reflect.Modifier;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 public class ManagedApplicationStartup {
     private static final Logger logger = LoggerFactory.getLogger(ManagedApplicationStartup.class);
@@ -118,7 +119,7 @@ public class ManagedApplicationStartup {
     }
 
     private static Map<LifecycleHook.Event, List<Method>> getEventMethodMap() {
-        Map<LifecycleHook.Event, List<Method>> hookMap = new EnumMap<>(LifecycleHook.Event.class);
+        Map<LifecycleHook.Event, Map<Method, Integer>> hookMap = new EnumMap<>(LifecycleHook.Event.class);
 
         for (Method method : bootableClass.getDeclaredMethods()) {
             if (!method.isAnnotationPresent(LifecycleHook.class)) continue;
@@ -136,13 +137,29 @@ public class ManagedApplicationStartup {
 
             LifecycleHook hook = method.getAnnotation(LifecycleHook.class);
             LifecycleHook.Event event = hook.value();
+            int order =  hook.order();
 
-            List<Method> methods = hookMap.computeIfAbsent(event, k -> new java.util.ArrayList<>());
+            Map<Method, Integer> methodMap = hookMap.computeIfAbsent(event, k -> new HashMap<>());
 
-            methods.add(method);
+            methodMap.put(method, order);
         }
 
-        return hookMap;
+        Map<LifecycleHook.Event, List<Method>> sortedMap = new EnumMap<>(LifecycleHook.Event.class);
+
+        for (Map.Entry<LifecycleHook.Event, Map<Method, Integer>> entry : hookMap.entrySet()) {
+            List<Map.Entry<Method, Integer>> entries = new ArrayList<>(entry.getValue().entrySet());
+
+            entries.sort(Comparator.comparingInt(Map.Entry::getValue));
+
+            List<Method> sortedMethods = entries.stream()
+                    .map(Map.Entry::getKey)
+                    .collect(Collectors.toList());
+
+            sortedMap.put(entry.getKey(), sortedMethods);
+        }
+
+
+        return sortedMap;
     }
 
     private static void invokeHooks(LifecycleHook.Event event) {
