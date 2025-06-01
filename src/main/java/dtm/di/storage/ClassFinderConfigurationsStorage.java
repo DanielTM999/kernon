@@ -53,6 +53,7 @@ public class ClassFinderConfigurationsStorage implements ClassFinderConfiguratio
         jars.add("byte-buddy");
         jars.add("logback-classic");
         jars.add("slf4j-api");
+        jars.add("classfinder");
 
         return new ConfigData(
                 defaults.getAllElements(),

@@ -6,7 +6,7 @@
 
     <groupId>dtm.di</groupId>
     <artifactId>kernon</artifactId>
-    <version>1.0-SNAPSHOT</version>
+    <version>1.0.0</version>
 
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
@@ -16,6 +16,7 @@
         <lombok.version>1.18.38</lombok.version>
         <classfinder.version>1.0.1</classfinder.version>
         <byte.buddy.version>1.15.10</byte.buddy.version>
+        <logback.version>1.5.18</logback.version>
     </properties>
 
     <dependencies>
@@ -47,7 +48,7 @@
         <dependency>
             <groupId>ch.qos.logback</groupId>
             <artifactId>logback-classic</artifactId>
-            <version>1.5.18</version>
+            <version>${logback.version}</version>
             <scope>compile</scope>
         </dependency>
 
