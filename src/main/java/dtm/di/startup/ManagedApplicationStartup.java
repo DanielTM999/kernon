@@ -172,9 +172,10 @@ public class ManagedApplicationStartup {
                     method.invoke(null);
                     logDebug("Hook executado com sucesso: {}#{}", method.getDeclaringClass().getSimpleName(), method.getName());
                 } catch (Exception e) {
-                    logError("Erro ao executar hook {} no método {}: {}", event, method.getName(), e.getMessage(), e);
+                    Throwable rootCause = getRootCause(e);
+                    logError("Erro ao executar hook {} no método {}: {}", event, method.getName(), rootCause.getMessage(), rootCause);
                     throw new InvalidBootException("Erro ao executar hook " + event + " no método "
-                            + method.getName() + ": " + e.getMessage(), e);
+                            + method.getName() + ": " + rootCause.getMessage(), rootCause);
                 }
             }
         }else{
