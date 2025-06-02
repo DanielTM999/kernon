@@ -1,10 +1,13 @@
 package dtm.di.startup;
 
+import dtm.di.annotations.schedule.EnableSchedule;
 import dtm.di.annotations.aop.DisableAop;
 import dtm.di.annotations.boot.ApplicationBoot;
 import dtm.di.annotations.boot.LifecycleHook;
 import dtm.di.annotations.boot.OnBoot;
 import dtm.di.annotations.scanner.PackageScanIgnore;
+import dtm.di.annotations.schedule.Schedule;
+import dtm.di.annotations.schedule.ScheduleMethod;
 import dtm.di.core.DependencyContainer;
 import dtm.di.exceptions.InvalidClassRegistrationException;
 import dtm.di.exceptions.boot.InvalidBootException;
@@ -18,6 +21,9 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
@@ -30,7 +36,7 @@ public class ManagedApplicationStartup {
     private static Map<LifecycleHook.Event, List<Method>> eventMethodMap;
     private static boolean logEnabled;
     private static boolean aopEnable = true;
-
+    private static ScheduledExecutorService scheduledExecutorService;
 
     public static void doRun(){
         doRun(false);
@@ -48,6 +54,9 @@ public class ManagedApplicationStartup {
 
         bootableClass = getBootableClass();
         logInfo("Classe bootable definida: {}", bootableClass.getName());
+
+        configuraSchedule();
+        logInfo("Schedule "+((scheduledExecutorService == null) ? "Dasativado" : "Ativado"));
 
         eventMethodMap = getEventMethodMap();
         logInfo("Hooks carregados para os eventos: {}", eventMethodMap.keySet());
@@ -207,6 +216,7 @@ public class ManagedApplicationStartup {
             invokeHooks(LifecycleHook.Event.AFTER_CONTAINER_LOAD);
             try {
                 logLifecycle("STARTUP_METHOD", true);
+                runSchedulerAsync();
                 runMethod.invoke(null);
                 logLifecycle("STARTUP_METHOD", false);
             } catch (Exception e) {
@@ -225,6 +235,23 @@ public class ManagedApplicationStartup {
             throw new InvalidBootException("Erro durante boot da aplicação", t);
         }
 
+    }
+
+    private static void runSchedulerAsync(){
+        if(scheduledExecutorService != null){
+            CompletableFuture.runAsync(() -> {
+                for(Class<?> clazz : dependencyContainer.getLoadedSystemClasses()){
+                    if(!clazz.isAnnotationPresent(Schedule.class)) continue;
+                    try{
+                        executeScheduleItem(clazz);
+                    }catch (Exception e){
+                        Throwable rootCause = getRootCause(e);
+                        logError("Erro ao executar schedule {} na classe {}: {}", clazz.getName(), rootCause.getMessage(), rootCause);
+                    }
+
+                }
+            });
+        }
     }
 
     private static void logLifecycle(String label, boolean start) {
@@ -284,6 +311,15 @@ public class ManagedApplicationStartup {
         return !bootableClass.isAnnotationPresent(DisableAop.class);
     }
 
+    private static void configuraSchedule(){
+        if(bootableClass.isAnnotationPresent(EnableSchedule.class)){
+            EnableSchedule enableSchedule = bootableClass.getAnnotation(EnableSchedule.class);
+            int numThreads = (enableSchedule.threads() > 1) ? enableSchedule.threads() : 2;
+
+            scheduledExecutorService = new ScheduledThreadPoolExecutor(numThreads);
+        }
+    }
+
     private static void applyPeckageScan(ClassFinderConfigurations classFinderConfigurations){
         PackageScanIgnore[] packageScanIgnoreList = bootableClass.getAnnotationsByType(PackageScanIgnore.class);
 
@@ -306,6 +342,38 @@ public class ManagedApplicationStartup {
         }else if(scanType == PackageScanIgnore.ScanType.REPLACE){
             base.clear();
             base.addAll(toAdd);
+        }
+    }
+
+    private static void executeScheduleItem(Class<?> clazz) throws Exception{
+
+        Set<Method> methods = Arrays.stream(clazz.getDeclaredMethods())
+                .filter(mtd -> {
+                    boolean isAnoted = mtd.isAnnotationPresent(ScheduleMethod.class);
+                    boolean nonParameter = mtd.getParameterCount() == 0;
+                    return isAnoted && nonParameter;
+                }).collect(Collectors.toSet());
+
+        if(methods.isEmpty()) return;
+
+        Object instance = dependencyContainer.newInstance(clazz);
+
+        for(Method method : methods){
+            ScheduleMethod scheduleMethod = method.getAnnotation(ScheduleMethod.class);
+            long time = (scheduleMethod.time() > 0) ? scheduleMethod.time() : 1000;
+            long delay = (scheduleMethod.startDelay() > 0) ? scheduleMethod.startDelay() : 0;
+            TimeUnit timeUnit =(scheduleMethod.timeUnit() != null) ? scheduleMethod.timeUnit() : TimeUnit.MILLISECONDS;
+
+            scheduledExecutorService.scheduleAtFixedRate(() -> {
+                try{
+                    method.setAccessible(true);
+                    method.invoke(instance);
+                }catch (Exception e){
+                    Throwable rootCause = getRootCause(e);
+                    logError("Erro ao executar schedule {} no método {}: {}", method.getName(), rootCause.getMessage(), rootCause);
+                }
+
+            }, delay, time, timeUnit);
         }
     }
 
