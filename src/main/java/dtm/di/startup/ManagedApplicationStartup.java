@@ -363,17 +363,23 @@ public class ManagedApplicationStartup {
             long time = (scheduleMethod.time() > 0) ? scheduleMethod.time() : 1000;
             long delay = (scheduleMethod.startDelay() > 0) ? scheduleMethod.startDelay() : 0;
             TimeUnit timeUnit =(scheduleMethod.timeUnit() != null) ? scheduleMethod.timeUnit() : TimeUnit.MILLISECONDS;
+            boolean periadic = scheduleMethod.periodic();
 
-            scheduledExecutorService.scheduleAtFixedRate(() -> {
-                try{
+            Runnable task = () -> {
+                try {
                     method.setAccessible(true);
                     method.invoke(instance);
-                }catch (Exception e){
+                } catch (Exception e) {
                     Throwable rootCause = getRootCause(e);
                     logError("Erro ao executar schedule {} no método {}: {}", method.getName(), rootCause.getMessage(), rootCause);
                 }
+            };
 
-            }, delay, time, timeUnit);
+            if(periadic){
+                scheduledExecutorService.scheduleAtFixedRate(task, delay, time, timeUnit);
+            }else{
+                scheduledExecutorService.schedule(task, delay, timeUnit);
+            }
         }
     }
 

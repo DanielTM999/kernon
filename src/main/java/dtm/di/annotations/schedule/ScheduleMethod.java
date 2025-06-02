@@ -12,4 +12,5 @@ public @interface ScheduleMethod {
     TimeUnit timeUnit() default TimeUnit.MILLISECONDS;
     long time() default 0;
     long startDelay() default 0;
+    boolean periodic() default true;
 }
