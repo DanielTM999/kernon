@@ -35,6 +35,15 @@ O `ManagedApplicationStartup` é um sistema modular que combina três componente
     - Desligável via @DisableAop no `ApplicationBoot`
     - Desligável via função disableAOP() pelo comteiner
 
+### 4. `Agendador de Tarefas` - (@Schedule) opicional
+- **Função Principal**: 
+  - Permite a execução automática de métodos em intervalos de tempo definidos
+- **Caracteristica**:
+  - Execução assíncrona e independente do restante do ciclo de vida da aplicação
+  - Desativado por padrão — deve ser explicitamente habilitado com @EnableSchedule
+  - Utiliza Pool de Threads interno para controle de concorrência
+  - Pode ser ativado com configuração de número de threads personalizável
+
 
 ![Diagrama de Arquitetura](/docs/imgs/arquitetura_managed_app.png)
 
