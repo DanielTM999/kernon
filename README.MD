@@ -165,7 +165,7 @@ public class AppLifecycle {
 }
 ```
 
-## ⚙️ Fluxo de Execução Garantido
+## ⚙ Fluxo de Execução Garantido
 
 ### Ordem Estrita de Processamento
 1. `BEFORE_ALL`  
@@ -182,6 +182,67 @@ public class AppLifecycle {
   - Evite operações não determinísticas.
   ```
 - **Performance**: Cada hook adiciona tempo de inicialização → Mantenha operações essenciais
+
+# Agendador de Tarefas (@Schedule)
+
+- O sistema de agendamento permite que classes e métodos sejam executados periodicamente de forma automática após o boot da aplicação.
+
+## Habilitando o agendador
+
+- Para utilizar o sistema de tarefas agendadas, adicione a anotação **`@EnableSchedule`** na classe principal ou na classe marcada no **`@ApplicationBoot`**
+
+```java
+    import dtm.di.annotations.*;
+    import dtm.di.startup.ManagedApplicationStartup;    
+
+    @EnableSchedule(threads = 4)
+    @ApplicationBoot
+    public class AppMain {
+        public static void main(String[] args) {
+            ManagedApplicationStartup.doRun(true);
+        }
+    }
+```
+
+- **threads**: número de threads disponíveis para executar os métodos agendados. O padrão mínimo é 2.
+
+## Classe com tarefas agendadas
+
+- Para uma classe participar do agendamento, ela deve ser marcada com **`@Schedule`**.
+
+```java
+    import dtm.di.annotations.*;
+
+    @Schedule
+    public class RelatorioScheduler {
+    
+        @ScheduleMethod(time = 10, timeUnit = TimeUnit.SECONDS, startDelay = 5, periodic = true)
+        public void gerarRelatorioPeriodicamente() {
+            System.out.println("Relatório gerado: " + LocalDateTime.now());
+        }
+    }
+    
+```
+
+### ⚙ Detalhes de `@ScheduleMethod`
+
+| Parâmetro    | Descrição                                                                 |
+|--------------|---------------------------------------------------------------------------|
+| `time`       | Intervalo entre execuções (em conjunto com `timeUnit`)                    |
+| `timeUnit`   | Unidade de tempo (`TimeUnit.SECONDS`, `TimeUnit.MILLISECONDS`, etc.)      |
+| `startDelay` | Tempo de atraso inicial antes da primeira execução                        |
+| `periodic`   | `true` para execução periódica, `false` para execução única (delayed)     |
+
+> **Importante**: o método deve ser `public`, sem parâmetros e não pode lançar exceções verificadas.
+
+---
+
+###  Comportamento de Execução
+
+- O framework utiliza um `ScheduledThreadPoolExecutor` interno.
+- Métodos agendados são executados **assíncronamente** após a finalização do método `@OnBoot`.
+- Se `@EnableSchedule` não estiver presente, nenhuma tarefa será executada, mesmo com `@Schedule`.
+
 
 # Diagrama de Fluxo
 ![Diagrama de Fluxo](/docs/imgs/fluxo_managed_app.png)
