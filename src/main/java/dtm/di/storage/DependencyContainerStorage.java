@@ -39,6 +39,7 @@ public class DependencyContainerStorage implements DependencyContainer {
     private final Set<Class<?>> externalBeenBefore;
     private final Set<Class<?>> externalBeenAfter;
     private final Class<?> mainClass;
+    private final List<String> profiles;
     private boolean childrenRegistration;
     private boolean parallelInjection;
     private boolean aop;
@@ -47,9 +48,9 @@ public class DependencyContainerStorage implements DependencyContainer {
     @Setter
     private ClassFinderConfigurations classFinderConfigurations;
 
-    public static DependencyContainerStorage getInstance(Class<?> mainClass){
+    public static DependencyContainerStorage getInstance(Class<?> mainClass, String... profiles){
         if(StaticContainer.getContainerStorage() == null){
-            StaticContainer.setContainerStorage(new DependencyContainerStorage(mainClass));
+            StaticContainer.setContainerStorage(new DependencyContainerStorage(mainClass, profiles));
         }
 
         return StaticContainer.getContainerStorage();
@@ -63,7 +64,7 @@ public class DependencyContainerStorage implements DependencyContainer {
         return StaticContainer.getContainerStorage();
     }
 
-    private DependencyContainerStorage(Class<?> mainClass){
+    private DependencyContainerStorage(Class<?> mainClass, String... profiles){
         this.dependencyContainer = new ConcurrentHashMap<>();
         this.loaded = new AtomicBoolean(false);
         this.classFinder = new ClassFinderService();
@@ -76,6 +77,14 @@ public class DependencyContainerStorage implements DependencyContainer {
         this.externalBeenAfter = ConcurrentHashMap.newKeySet();
         this.classFinderConfigurations = getFindConfigurations();
         this.mainClass = mainClass;
+        if(profiles.length > 0){
+            this.profiles = Arrays.stream(profiles)
+                    .filter((profile) -> profile != null && !profile.isEmpty())
+                    .toList();
+
+        }else{
+            this.profiles = List.of("default");
+        }
     }
 
 
