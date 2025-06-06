@@ -345,8 +345,8 @@ public class Main {
     @Configuration
     public static class MinhaConfig {
 
-        // BeenDefinition.ProxyType.INSTANCE para não simgleton mas cuidado pois o não singleton ele recontroi a intancia
-        @BeenDefinition(proxyType = BeenDefinition.ProxyType.STATIC)
+        // BeanDefinition.ProxyType.INSTANCE para não simgleton mas cuidado pois o não singleton ele recontroi a intancia
+        @BeanDefinition(proxyType = BeanDefinition.ProxyType.STATIC)
         @Service(qualifier = "MainService3")
         public MainService3 mainService3() {
             return new MainService3();

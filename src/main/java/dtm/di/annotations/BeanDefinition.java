@@ -7,7 +7,7 @@ import java.lang.annotation.Target;
 
 @Retention(RetentionPolicy.RUNTIME)
 @Target({ElementType.METHOD})
-public @interface BeenDefinition {
+public @interface BeanDefinition {
     ProxyType proxyType() default ProxyType.STATIC;
 
     public enum ProxyType{

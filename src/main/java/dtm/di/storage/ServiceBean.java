@@ -5,12 +5,12 @@ import lombok.Data;
 
 @Data
 @AllArgsConstructor
-final class ServiceBeen implements Comparable<ServiceBeen>{
+final class ServiceBean implements Comparable<ServiceBean>{
     private Class<?> clazz;
     private long dependencyOrder;
 
     @Override
-    public int compareTo(ServiceBeen o) {
+    public int compareTo(ServiceBean o) {
         return Long.compare(this.dependencyOrder, o.dependencyOrder);
     }
 }

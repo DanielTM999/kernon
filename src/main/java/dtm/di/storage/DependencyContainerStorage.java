@@ -12,7 +12,6 @@ import dtm.di.storage.lazy.Lazy;
 import dtm.di.storage.lazy.LazyObject;
 import dtm.discovery.core.ClassFinder;
 import dtm.discovery.core.ClassFinderConfigurations;
-import dtm.discovery.core.ClassFinderErrorHandler;
 import dtm.discovery.finder.ClassFinderService;
 import lombok.Getter;
 import lombok.NonNull;
@@ -25,6 +24,7 @@ import java.net.URL;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -34,7 +34,7 @@ public class DependencyContainerStorage implements DependencyContainer {
     private final ClassFinder classFinder;
     private final AtomicBoolean loaded;
     private final List<String> foldersToLoad;
-    private final List<ServiceBeen> serviceBeensDefinition;
+    private final List<ServiceBean> serviceBeensDefinition;
     private final Set<Class<?>> loadedSystemClasses;
     private final Set<Class<?>> externalBeenBefore;
     private final Set<Class<?>> externalBeenAfter;
@@ -276,12 +276,12 @@ public class DependencyContainerStorage implements DependencyContainer {
     }
 
     private void loadBeens() throws InvalidClassRegistrationException{
-        for (ServiceBeen service: serviceBeensDefinition){
+        for (ServiceBean service: serviceBeensDefinition){
             loadBeen(service, new HashSet<>(), getQualifierName(service.getClazz()));
         }
     }
 
-    private void loadBeen(ServiceBeen been, final Set<Class<?>> registeringClasses, String qualifier) throws InvalidClassRegistrationException{
+    private void loadBeen(ServiceBean been, final Set<Class<?>> registeringClasses, String qualifier) throws InvalidClassRegistrationException{
         final Class<?> dependency = been.getClazz();
 
         try {
@@ -327,7 +327,7 @@ public class DependencyContainerStorage implements DependencyContainer {
         int order = 0;
         for(Class<?> subClass : listOfRegistration){
             if(!dependencyContainer.containsKey(subClass)){
-                loadBeen(new ServiceBeen(subClass, order++), registeringClasses, getQualifierName(subClass));
+                loadBeen(new ServiceBean(subClass, order++), registeringClasses, getQualifierName(subClass));
             }
         }
     }
@@ -353,22 +353,23 @@ public class DependencyContainerStorage implements DependencyContainer {
 
     private void filterServiceClass(){
         final int threshold = 50;
-        final Set<Class<?>> serviceLoadedClass = getConcreteServiceLoadedClass(Service.class);
-        final int total = serviceLoadedClass.size();
+        final Set<Class<?>> serviceLoadedClassActive = getConcreteServiceLoadedClass(Service.class);
+
+        final int total = serviceLoadedClassActive.size();
 
         final Map<Class<?>, Set<Class<?>>> dependencyGraph = new ConcurrentHashMap<>();
 
         if (total < threshold) {
-            processDependencyServiceWithParallelStream(dependencyGraph, serviceLoadedClass);
+            processDependencyServiceWithParallelStream(dependencyGraph, serviceLoadedClassActive);
         } else {
-            processDependencyServiceWithExecutorService(dependencyGraph, serviceLoadedClass);
+            processDependencyServiceWithExecutorService(dependencyGraph, serviceLoadedClassActive);
         }
 
-        List<Class<?>> ordered = TopologicalSorter.sort(serviceLoadedClass, dependencyGraph);
+        List<Class<?>> ordered = TopologicalSorter.sort(serviceLoadedClassActive, dependencyGraph);
 
         int order = 0;
         for (Class<?> clazz : ordered) {
-            serviceBeensDefinition.add(new ServiceBeen(clazz, order++));
+            serviceBeensDefinition.add(new ServiceBean(clazz, order++));
         }
     }
 
@@ -435,8 +436,8 @@ public class DependencyContainerStorage implements DependencyContainer {
     }
 
     private boolean isSingletonBeen(@NonNull Method method){
-        if(method.isAnnotationPresent(BeenDefinition.class)){
-            return method.getAnnotation(BeenDefinition.class).proxyType() == BeenDefinition.ProxyType.STATIC;
+        if(method.isAnnotationPresent(BeanDefinition.class)){
+            return method.getAnnotation(BeanDefinition.class).proxyType() == BeanDefinition.ProxyType.STATIC;
         }
         return true;
     }
@@ -445,38 +446,38 @@ public class DependencyContainerStorage implements DependencyContainer {
         return clazz.isAnnotationPresent(Singleton.class);
     }
 
-    private Set<Class<?>> getConcreteServiceLoadedClass(Class<? extends Annotation> anotation){
+    private Set<Class<?>> getConcreteServiceLoadedClass(Class<? extends Annotation> annotation){
+        return getConcreteServiceLoadedClass(annotation, true);
+    }
+
+    private Set<Class<?>> getConcreteServiceLoadedClass(Class<? extends Annotation> annotation, boolean onlyActive){
         final int threshold = 350;
         final int total = loadedSystemClasses.size();
+
+        Predicate<Class<?>> filterConcrete = c -> (onlyActive) ? filterConcreteBeanAndActive(c, annotation) : filterConcreteBean(c, annotation);
 
         if (total < threshold) {
             return loadedSystemClasses.stream()
                     .parallel()
-                    .filter(c-> c.isAnnotationPresent(anotation)&& !c.isInterface() && !Modifier.isAbstract(c.getModifiers()))
+                    .filter(filterConcrete)
                     .collect(Collectors.toSet());
         }else{
-
-            final int availableProcessors = Runtime.getRuntime().availableProcessors();
-            final List<Future<Set<Class<?>>>> futures = new ArrayList<>();
-            final Set<Class<?>> result = new HashSet<>();
-            try(ExecutorService executorService = Executors.newFixedThreadPool(availableProcessors)){
-                int chunkSize = total / availableProcessors;
+            final List<CompletableFuture<?>> futures = new ArrayList<>();
+            final Set<Class<?>> result = ConcurrentHashMap.newKeySet();
+            try(ExecutorService executorService = Executors.newVirtualThreadPerTaskExecutor()){
                 List<Class<?>> classList = new ArrayList<>(loadedSystemClasses);
-                for (int i = 0; i < total; i += chunkSize) {
-                    final int start = i;
-                    final int end = Math.min(i + chunkSize, total);
-                    futures.add(executorService.submit(() -> {
-                        return classList.subList(start, end).stream()
-                                .filter(c -> c.isAnnotationPresent(anotation) && !c.isInterface() && !Modifier.isAbstract(c.getModifiers()))
-                                .collect(Collectors.toSet());
-                    }));
+
+                for(Class<?> clazz : classList){
+                    futures.add(CompletableFuture.runAsync(() -> {
+                        if(filterConcrete.test(clazz)){
+                            result.add(clazz);
+                        }
+                    }, executorService));
                 }
 
-                for (Future<Set<Class<?>>> future : futures) {
-                    try {
-                        result.addAll(future.get());
-                    } catch (Exception ignored) {}
-                }
+                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+            } catch (CompletionException e) {
+                throw new DependencyContainerException("erro ao caregar dependencias", e.getCause());
             }
 
             return result;
@@ -849,9 +850,9 @@ public class DependencyContainerStorage implements DependencyContainer {
                         null
                 );
             }
-            ServiceBeen serviceBeen = new ServiceBeen(beenClass, 0);
+            ServiceBean serviceBean = new ServiceBean(beenClass, 0);
 
-            loadBeen(serviceBeen, new HashSet<>(), getQualifierName(beenClass));
+            loadBeen(serviceBean, new HashSet<>(), getQualifierName(beenClass));
         }catch (NoSuchMethodException e) {
             throw new InvalidClassRegistrationException(
                     "Bean externo não-singleton (" + beenClass.getName() + ") deve possuir um construtor vazio.",
@@ -962,6 +963,29 @@ public class DependencyContainerStorage implements DependencyContainer {
 
     private void filterExternalConfigurations(){
 
+    }
+
+    private boolean filterConcreteBean(Class<?> clazz, Class<? extends Annotation> annotation){
+        return clazz.isAnnotationPresent(annotation) && isConcreteClass(clazz);
+    }
+
+    private boolean filterConcreteBeanAndActive(Class<?> clazz, Class<? extends Annotation> annotation){
+        if (!isConcreteClass(clazz) || !clazz.isAnnotationPresent(annotation)) {
+            return false;
+        }
+
+        Profile profile = clazz.getAnnotation(Profile.class);
+
+        if (profile != null) {
+            String selectedProfile = profile.value();
+            return selectedProfile == null || selectedProfile.isEmpty() || this.profiles.contains(selectedProfile);
+        }
+
+        return true;
+    }
+
+    private boolean isConcreteClass(Class<?> clazz){
+        return !clazz.isInterface() && !Modifier.isAbstract(clazz.getModifiers()) && !clazz.isEnum() && !clazz.isRecord();
     }
 
 }
