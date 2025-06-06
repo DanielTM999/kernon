@@ -431,6 +431,9 @@ public class DependencyContainerStorage implements DependencyContainer {
         if(beenMethod.isAnnotationPresent(Service.class)){
             Service qualifierAnnotation = beenMethod.getAnnotation(Service.class);
             return (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
+        }else if(beenMethod.isAnnotationPresent(Qualifier.class)){
+            Qualifier qualifierAnnotation = beenMethod.getAnnotation(Qualifier.class);
+            return (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
         }
         return  "default";
     }
@@ -687,7 +690,7 @@ public class DependencyContainerStorage implements DependencyContainer {
                 }
             }
         } catch (Exception e) {
-            System.out.println(e.getMessage());
+            throw new InvalidClassRegistrationException("Erro ao configurar: "+configurationsClass, configurationsClass, e);
         }
     }
 
@@ -852,7 +855,7 @@ public class DependencyContainerStorage implements DependencyContainer {
             }
             ServiceBean serviceBean = new ServiceBean(beenClass, 0);
 
-            loadBeen(serviceBean, new HashSet<>(), getQualifierName(beenClass));
+            loadBeen(serviceBean, new HashSet<>(), qualifier);
         }catch (NoSuchMethodException e) {
             throw new InvalidClassRegistrationException(
                     "Bean externo não-singleton (" + beenClass.getName() + ") deve possuir um construtor vazio.",

@@ -253,6 +253,13 @@ public class AppLifecycle {
 - Se `@EnableSchedule` não estiver presente, nenhuma tarefa será executada, mesmo com `@Schedule`.
 
 
+# Configurações 
+- O framework utiliza a anotação `@Configuration` para configrar os gerenciamentos
+- A resolução de dependências (em métodos, campos ou construtores) segue a seguinte ordem:
+  - **Beans** externos registrados manualmente no container têm prioridade. Se uma dependência requisitada já estiver registrada externamente, ela será utilizada diretamente
+  - **Beans internos detectados automaticamente**: caso a dependência não esteja registrada externamente, o framework tentará resolver e instanciar automaticamente um bean compatível, utilizando anotações como, @Component, etc.
+
+
 # Diagrama de Fluxo
 ![Diagrama de Fluxo](/docs/imgs/fluxo_managed_app.png)
 
