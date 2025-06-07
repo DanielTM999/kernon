@@ -36,8 +36,8 @@ public class DependencyContainerStorage implements DependencyContainer {
     private final List<String> foldersToLoad;
     private final List<ServiceBean> serviceBeensDefinition;
     private final Set<Class<?>> loadedSystemClasses;
-    private final Set<Class<?>> externalBeenBefore;
-    private final Set<Class<?>> externalBeenAfter;
+    private final Map<Class<?>, List<Method>> externalBeenBefore;
+    private final Map<Class<?>, List<Method>> externalBeenAfter;
     private final Class<?> mainClass;
     private final List<String> profiles;
     private boolean childrenRegistration;
@@ -73,8 +73,8 @@ public class DependencyContainerStorage implements DependencyContainer {
         this.foldersToLoad = new ArrayList<>();
         this.serviceBeensDefinition = new Vector<>();
         this.loadedSystemClasses = ConcurrentHashMap.newKeySet();
-        this.externalBeenBefore = ConcurrentHashMap.newKeySet();
-        this.externalBeenAfter = ConcurrentHashMap.newKeySet();
+        this.externalBeenBefore = new ConcurrentHashMap<>();
+        this.externalBeenAfter = new ConcurrentHashMap<>();
         this.classFinderConfigurations = getFindConfigurations();
         this.mainClass = mainClass;
         if(profiles.length > 0){
@@ -575,9 +575,9 @@ public class DependencyContainerStorage implements DependencyContainer {
             long count = getDependencyCount(clazz);
 
             if(count > 1){
-                this.externalBeenAfter.add(clazz);
+                this.externalBeenAfter.put(clazz, getMethodsListToBeen(clazz, false));
             }else{
-                this.externalBeenBefore.add(clazz);
+                this.externalBeenBefore.put(clazz, getMethodsListToBeen(clazz, true));
             }
         }
     }
@@ -602,41 +602,18 @@ public class DependencyContainerStorage implements DependencyContainer {
         registerObject(this);
     }
 
-    private void registerExternalBeens(Set<Class<?>> configurationsClasses) throws InvalidClassRegistrationException{
-        List<Future<?>> tasks = new ArrayList<>();
-        try(ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())){
-            for(Class<?> configurationsClass : configurationsClasses){
-                tasks.add(executor.submit(() -> {
-                    List<Method> methodsList = getMethodsListToBeen(configurationsClass);
-                    if(!methodsList.isEmpty()){
-                        try {
-                            registerExternalBeen(configurationsClass, methodsList);
-                        } catch (InvalidClassRegistrationException e) {
-                            throw new DependencyContainerRuntimeException(e);
-                        }
-                    }
-                }));
-            }
-        }
+    private void registerExternalBeens(Map<Class<?>, List<Method>> configurationsClasses) throws InvalidClassRegistrationException{
+        for(Map.Entry<Class<?>, List<Method>> configurationsClass : configurationsClasses.entrySet()){
+            final Class<?> clazz = configurationsClass.getKey();
+            List<Method> methodsList = configurationsClass.getValue();
 
-        for (Future<?> task : tasks) {
-            try {
-                task.get();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new DependencyContainerRuntimeException("Thread foi interrompida durante o registro de beans externos", e);
-            } catch (ExecutionException e) {
-                Throwable cause = e.getCause();
-                if (cause instanceof InvalidClassRegistrationException) {
-                    throw (InvalidClassRegistrationException) cause;
-                } else {
-                    throw new DependencyContainerRuntimeException("Erro inesperado ao registrar beans externos", cause);
-                }
+            if(!methodsList.isEmpty()){
+                registerExternalBeen(clazz, methodsList, true);
             }
         }
     }
 
-    private List<Method> getMethodsListToBeen(Class<?> configurationsClass){
+    private List<Method> getMethodsListToBeen(Class<?> configurationsClass, boolean order){
         return Arrays.stream(configurationsClass.getDeclaredMethods())
                 .filter(method -> {
                     if(method.getReturnType().equals(Void.class)){
@@ -644,17 +621,32 @@ public class DependencyContainerStorage implements DependencyContainer {
                     }
                     return method.isAnnotationPresent(Service.class) && !method.isSynthetic();
                 })
+                .sorted(Comparator.comparingInt(Method::getParameterCount))
                 .toList();
     }
 
-    private void registerExternalBeen(Class<?> configurationsClass, List<Method> methodsList) throws InvalidClassRegistrationException{
+    private void registerExternalBeen(Class<?> configurationsClass, List<Method> methodsList, boolean load) throws InvalidClassRegistrationException{
         try {
             Object configurationInstance = newInstance(configurationsClass);
             for (Method method : methodsList) {
                 Object result = null;
                 Class<?>[] parameterTypes = method.getParameterTypes();
                 Object[] args = new Object[parameterTypes.length];
-                Arrays.fill(args, null);
+
+                if(load){
+                    for(int i = 0; i < parameterTypes.length; i++){
+                        final Class<?> clazz = parameterTypes[i];
+                        try{
+                            args[i] = getDependency(clazz);
+                        }catch (Exception e){
+                            args[i] = null;
+                            e.printStackTrace();
+                        }
+                    }
+                }else{
+                    Arrays.fill(args, null);
+                }
+
 
                 method.setAccessible(true);
 
