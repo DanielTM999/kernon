@@ -568,35 +568,16 @@ public class DependencyContainerStorage implements DependencyContainer {
     }
 
     private void filterExternalsBeens() throws InvalidClassRegistrationException{
-        List<Future<?>> tasks = new ArrayList<>();
         Set<Class<?>> externalBeen = getConcreteServiceLoadedClass(Configuration.class);
-        try(ExecutorService executor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())){
-            for(Class<?> clazz : externalBeen){
-                tasks.add(executor.submit(() -> {
-                    long count = getDependencyCount(clazz);
+        final Map<Class<?>, Set<Class<?>>> dependencyGraph = new ConcurrentHashMap<>();
+        List<Class<?>> ordered = TopologicalSorter.sort(externalBeen, dependencyGraph);
+        for(Class<?> clazz : ordered){
+            long count = getDependencyCount(clazz);
 
-                    if(count > 1){
-                        this.externalBeenAfter.add(clazz);
-                    }else{
-                        this.externalBeenBefore.add(clazz);
-                    }
-                }));
-            }
-        }
-
-        for (Future<?> task : tasks) {
-            try {
-                task.get();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new DependencyContainerRuntimeException("Thread foi interrompida durante o registro de beans externos", e);
-            } catch (ExecutionException e) {
-                Throwable cause = e.getCause();
-                if (cause instanceof InvalidClassRegistrationException) {
-                    throw (InvalidClassRegistrationException) cause;
-                } else {
-                    throw new DependencyContainerRuntimeException("Erro inesperado ao registrar beans externos", cause);
-                }
+            if(count > 1){
+                this.externalBeenAfter.add(clazz);
+            }else{
+                this.externalBeenBefore.add(clazz);
             }
         }
     }
