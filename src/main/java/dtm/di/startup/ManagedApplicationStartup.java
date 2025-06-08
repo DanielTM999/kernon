@@ -1,5 +1,6 @@
 package dtm.di.startup;
 
+import dtm.di.annotations.boot.OnBootFail;
 import dtm.di.annotations.schedule.EnableSchedule;
 import dtm.di.annotations.aop.DisableAop;
 import dtm.di.annotations.boot.ApplicationBoot;
@@ -20,16 +21,14 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 public class ManagedApplicationStartup {
     private static final Logger logger = LoggerFactory.getLogger(ManagedApplicationStartup.class);
     private static Method runMethod;
+    private static Method throwableMethod;
     private static DependencyContainer dependencyContainer;
     private static Class<?> bootableClass;
     private static Class<?> mainClass;
@@ -64,8 +63,13 @@ public class ManagedApplicationStartup {
         dependencyContainer = getDependencyContainer();
         logInfo("DependencyContainer obtido");
 
-        runMethod = getRunMethod();
+        getRunMethod();
         logInfo("Método @OnBoot encontrado: {}", runMethod.getName());
+        if (throwableMethod != null) {
+            logInfo("Handler para erros identificado no método @OnBootFail: {}.", throwableMethod.getName());
+        } else {
+            logInfo("Nenhum handler para erros (@OnBootFail) foi definido; exceções poderão ser propagadas normalmente.");
+        }
 
         aopEnable = aopIsEnable();
         logInfo("AOP: {}", ((aopEnable) ? "Habilitado" : "Desativado com @DisableAop"));
@@ -105,7 +109,7 @@ public class ManagedApplicationStartup {
         return bootableClass;
     }
 
-    private static Method getRunMethod(){
+    private static void getRunMethod(){
         for (Method method : bootableClass.getDeclaredMethods()) {
             if (method.isAnnotationPresent(OnBoot.class)) {
                 int mods = method.getModifiers();
@@ -113,11 +117,23 @@ public class ManagedApplicationStartup {
                         Modifier.isPublic(mods) &&
                         method.getReturnType() == void.class;
 
-                if(isValid) return method;
+                if(isValid) runMethod = method;
+            }else if(method.isAnnotationPresent(OnBootFail.class)){
+                int mods = method.getModifiers();
+                boolean isValid = Modifier.isStatic(mods) &&
+                        Modifier.isPublic(mods) &&
+                        method.getReturnType() == void.class;
+
+                Class<?>[] params = method.getParameterTypes();
+                boolean hasThrowableParam = (params.length == 1 && Throwable.class.isAssignableFrom(params[0]));
+
+                if (isValid && hasThrowableParam) throwableMethod = method;
             }
         }
 
-        throw new InvalidBootException("Nenhum método @OnBoot válido encontrado na classe " + bootableClass.getName());
+        if(runMethod == null){
+            throw new InvalidBootException("Nenhum método @OnBoot válido encontrado na classe " + bootableClass.getName());
+        }
     }
 
     private static DependencyContainer getDependencyContainer(){
@@ -193,6 +209,11 @@ public class ManagedApplicationStartup {
     }
 
     private static void runAsync(){
+        Executor executor = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable);
+            thread.setName("BootThread");
+            return thread;
+        });
         AtomicReference<Throwable> exception = new AtomicReference<>(null);
         logLifecycle("BOOT_START", true);
         invokeHooks(LifecycleHook.Event.BEFORE_ALL);
@@ -207,7 +228,7 @@ public class ManagedApplicationStartup {
                 logError("Erro ao carregar DependencyContainer: {}", e.getMessage(), e);
                 exception.set(e);
             }
-        }).whenComplete((res, ex) -> {
+        }, executor).whenComplete((res, ex) -> {
             if (ex != null) {
                 Throwable rootCause = getRootCause(ex);
                 exception.set(rootCause);
@@ -232,7 +253,17 @@ public class ManagedApplicationStartup {
         logLifecycle("BOOT_COMPLETE", false);
         if (exception.get() != null) {
             Throwable t = exception.get();
-            throw new InvalidBootException("Erro durante boot da aplicação", t);
+            if(throwableMethod != null){
+                try{
+                    logInfo("Um erro foi detectado durante o processo de boot. Encaminhando a exceção para o manipulador definido em @OnBootFail: {}", throwableMethod.getName());
+                    throwableMethod.invoke(null, t);
+                }catch (Exception e){
+                    logError("Erro ao invocar o método de tratamento de falhas definido por @OnBootFail o erro será propagado");
+                    throw new InvalidBootException("Erro durante boot da aplicação", t);
+                }
+            }else{
+                throw new InvalidBootException("Erro durante boot da aplicação", t);
+            }
         }
 
     }

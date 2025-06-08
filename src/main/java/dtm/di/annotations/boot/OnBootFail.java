@@ -1,14 +1,11 @@
-package dtm.di.annotations;
+package dtm.di.annotations.boot;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-@Component
 @Retention(RetentionPolicy.RUNTIME)
-@Target({ElementType.TYPE, ElementType.METHOD})
-public @interface Service {
-    String qualifier() default "default";
+@Target(ElementType.METHOD)
+public @interface OnBootFail {
 }
-

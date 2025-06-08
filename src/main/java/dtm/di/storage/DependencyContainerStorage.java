@@ -38,6 +38,7 @@ public class DependencyContainerStorage implements DependencyContainer {
     private final Set<Class<?>> loadedSystemClasses;
     private final Map<Class<?>, List<Method>> externalBeenBefore;
     private final Map<Class<?>, List<Method>> externalBeenAfter;
+    private final Map<Class<? extends Annotation>, Boolean> metaAnnotationCache;
     private final Class<?> mainClass;
     private final List<String> profiles;
     private boolean childrenRegistration;
@@ -75,6 +76,7 @@ public class DependencyContainerStorage implements DependencyContainer {
         this.loadedSystemClasses = ConcurrentHashMap.newKeySet();
         this.externalBeenBefore = new ConcurrentHashMap<>();
         this.externalBeenAfter = new ConcurrentHashMap<>();
+        this.metaAnnotationCache = new ConcurrentHashMap<>();
         this.classFinderConfigurations = getFindConfigurations();
         this.mainClass = mainClass;
         if(profiles.length > 0){
@@ -87,7 +89,6 @@ public class DependencyContainerStorage implements DependencyContainer {
         }
     }
 
-
     @Override
     public void load() throws InvalidClassRegistrationException {
         try{
@@ -96,7 +97,6 @@ public class DependencyContainerStorage implements DependencyContainer {
             loadSystemClasses();
             filterServiceClass();
             filterExternalsBeens();
-            filterExternalConfigurations();
             loaded.set(true);
             selfInjection();
             registerExternalBeens(externalBeenBefore);
@@ -353,7 +353,7 @@ public class DependencyContainerStorage implements DependencyContainer {
 
     private void filterServiceClass(){
         final int threshold = 50;
-        final Set<Class<?>> serviceLoadedClassActive = getConcreteServiceLoadedClass(Service.class);
+        final Set<Class<?>> serviceLoadedClassActive = getConcreteServiceLoadedClass(Component.class);
 
         final int total = serviceLoadedClassActive.size();
 
@@ -370,20 +370,6 @@ public class DependencyContainerStorage implements DependencyContainer {
         int order = 0;
         for (Class<?> clazz : ordered) {
             serviceBeensDefinition.add(new ServiceBean(clazz, order++));
-        }
-    }
-
-    private boolean runInJar(){
-        try{
-            String className = getClass().getSimpleName() + ".class";
-            URL resorcesUrl = getClass().getResource(className);
-            if(resorcesUrl != null){
-                String classPath = resorcesUrl.toString();
-                return classPath.startsWith("jar:");
-            }
-            return false;
-        }catch (Exception e){
-            return false;
         }
     }
 
@@ -431,7 +417,10 @@ public class DependencyContainerStorage implements DependencyContainer {
         if(beenMethod.isAnnotationPresent(Service.class)){
             Service qualifierAnnotation = beenMethod.getAnnotation(Service.class);
             return (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
-        }else if(beenMethod.isAnnotationPresent(Qualifier.class)){
+        }else if(beenMethod.isAnnotationPresent(Component.class)){
+            Component qualifierAnnotation = beenMethod.getAnnotation(Component.class);
+            return (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
+        } else if(beenMethod.isAnnotationPresent(Qualifier.class)){
             Qualifier qualifierAnnotation = beenMethod.getAnnotation(Qualifier.class);
             return (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
         }
@@ -619,7 +608,7 @@ public class DependencyContainerStorage implements DependencyContainer {
                     if(method.getReturnType().equals(Void.class)){
                         return false;
                     }
-                    return method.isAnnotationPresent(Service.class) && !method.isSynthetic();
+                    return hasMetaAnnotation(method, Component.class) && !method.isSynthetic();
                 })
                 .sorted(Comparator.comparingInt(Method::getParameterCount))
                 .toList();
@@ -937,16 +926,12 @@ public class DependencyContainerStorage implements DependencyContainer {
         }
     }
 
-    private void filterExternalConfigurations(){
-
-    }
-
     private boolean filterConcreteBean(Class<?> clazz, Class<? extends Annotation> annotation){
-        return clazz.isAnnotationPresent(annotation) && isConcreteClass(clazz);
+        return hasMetaAnnotation(clazz, annotation) && isConcreteClass(clazz);
     }
 
     private boolean filterConcreteBeanAndActive(Class<?> clazz, Class<? extends Annotation> annotation){
-        if (!isConcreteClass(clazz) || !clazz.isAnnotationPresent(annotation)) {
+        if (!isConcreteClass(clazz) || !hasMetaAnnotation(clazz, annotation)) {
             return false;
         }
 
@@ -963,5 +948,55 @@ public class DependencyContainerStorage implements DependencyContainer {
     private boolean isConcreteClass(Class<?> clazz){
         return !clazz.isInterface() && !Modifier.isAbstract(clazz.getModifiers()) && !clazz.isEnum() && !clazz.isRecord();
     }
+
+    private boolean hasMetaAnnotation(Class<?> targetClass, Class<? extends Annotation> baseAnnotation){
+        if(targetClass.isAnnotationPresent(baseAnnotation)){
+            return true;
+        }
+        Set<Class<? extends Annotation>> visiting = new HashSet<>();
+        for (Annotation annotation : targetClass.getAnnotations()) {
+            if (hasMetaAnnotation(annotation.annotationType(), baseAnnotation, visiting)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasMetaAnnotation(Method targetMethod, Class<? extends Annotation> baseAnnotation){
+        if(targetMethod.isAnnotationPresent(baseAnnotation)){
+            return true;
+        }
+        Set<Class<? extends Annotation>> visiting = new HashSet<>();
+        for (Annotation annotation : targetMethod.getAnnotations()) {
+            if (hasMetaAnnotation(annotation.annotationType(), baseAnnotation, visiting)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasMetaAnnotation(Class<? extends Annotation> annotationType, Class<? extends Annotation> baseAnnotation, Set<Class<? extends Annotation>> visiting){
+        if (annotationType.equals(baseAnnotation)) {
+            return true;
+        }
+        if (metaAnnotationCache.containsKey(annotationType)) {
+            return metaAnnotationCache.get(annotationType);
+        }
+        if (!visiting.add(annotationType)) {
+            return false;
+        }
+
+        for (Annotation metaAnnotation : annotationType.getAnnotations()) {
+            if (hasMetaAnnotation(metaAnnotation.annotationType(), baseAnnotation, visiting)) {
+                visiting.remove(annotationType);
+                metaAnnotationCache.put(annotationType, true);
+                return true;
+            }
+        }
+        visiting.remove(annotationType);
+        metaAnnotationCache.put(annotationType, false);
+        return false;
+    }
+
 
 }
