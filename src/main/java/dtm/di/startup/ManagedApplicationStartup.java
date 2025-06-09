@@ -209,7 +209,7 @@ public class ManagedApplicationStartup {
     }
 
     private static void runAsync(){
-        Executor executor = Executors.newSingleThreadExecutor(runnable -> {
+        ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable);
             thread.setName("BootThread");
             return thread;
@@ -217,38 +217,40 @@ public class ManagedApplicationStartup {
         AtomicReference<Throwable> exception = new AtomicReference<>(null);
         logLifecycle("BOOT_START", true);
         invokeHooks(LifecycleHook.Event.BEFORE_ALL);
-        CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-            try {
-                logLifecycle("CONTAINER_LOAD", true);
-                dependencyContainer.enableParallelInjection();
-                if(aopEnable) dependencyContainer.enableAOP();
-                dependencyContainer.load();
-                logLifecycle("CONTAINER_LOAD", false);
-            } catch (InvalidClassRegistrationException e) {
-                logError("Erro ao carregar DependencyContainer: {}", e.getMessage(), e);
-                exception.set(e);
-            }
-        }, executor).whenComplete((res, ex) -> {
-            if (ex != null) {
-                Throwable rootCause = getRootCause(ex);
-                exception.set(rootCause);
-                logError("Erro durante carregamento assíncrono: {}", rootCause.getMessage(), rootCause);
-            }
-            invokeHooks(LifecycleHook.Event.AFTER_CONTAINER_LOAD);
-            try {
-                logLifecycle("STARTUP_METHOD", true);
-                runSchedulerAsync();
-                runMethod.invoke(null);
-                logLifecycle("STARTUP_METHOD", false);
-            } catch (Exception e) {
-                Throwable rootCause = getRootCause(e);
-                exception.set(rootCause);
-                logError("Erro ao executar método @OnBoot: {}", rootCause.getMessage(), rootCause);
-            }
-            invokeHooks(LifecycleHook.Event.AFTER_STARTUP_METHOD);
-        });
+        try(executor){
+            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+                try {
+                    logLifecycle("CONTAINER_LOAD", true);
+                    dependencyContainer.enableParallelInjection();
+                    if(aopEnable) dependencyContainer.enableAOP();
+                    dependencyContainer.load();
+                    logLifecycle("CONTAINER_LOAD", false);
+                } catch (InvalidClassRegistrationException e) {
+                    logError("Erro ao carregar DependencyContainer: {}", e.getMessage(), e);
+                    exception.set(e);
+                }
+            }, executor).whenComplete((res, ex) -> {
+                if (ex != null) {
+                    Throwable rootCause = getRootCause(ex);
+                    exception.set(rootCause);
+                    logError("Erro durante carregamento assíncrono: {}", rootCause.getMessage(), rootCause);
+                }
+                invokeHooks(LifecycleHook.Event.AFTER_CONTAINER_LOAD);
+                try {
+                    logLifecycle("STARTUP_METHOD", true);
+                    runSchedulerAsync();
+                    runMethod.invoke(null);
+                    logLifecycle("STARTUP_METHOD", false);
+                } catch (Exception e) {
+                    Throwable rootCause = getRootCause(e);
+                    exception.set(rootCause);
+                    logError("Erro ao executar método @OnBoot: {}", rootCause.getMessage(), rootCause);
+                }
+                invokeHooks(LifecycleHook.Event.AFTER_STARTUP_METHOD);
+            });
 
-        future.join();
+            future.join();
+        }
         invokeHooks(LifecycleHook.Event.AFTER_ALL);
         logLifecycle("BOOT_COMPLETE", false);
         if (exception.get() != null) {
