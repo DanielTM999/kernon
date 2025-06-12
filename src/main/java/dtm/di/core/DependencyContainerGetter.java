@@ -11,6 +11,7 @@ public interface DependencyContainerGetter {
     <T> T getDependency(Class<T> reference, String qualifier);
 
     <T> T newInstance(Class<T> referenceClass) throws NewInstanceException;
+    <T> T newInstance(Class<T> referenceClass, Object... contructorArgs) throws NewInstanceException;
 
     void injectDependencies(Object instance);
 

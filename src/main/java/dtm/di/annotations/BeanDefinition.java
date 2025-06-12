@@ -10,6 +10,7 @@ import java.lang.annotation.Target;
 public @interface BeanDefinition {
     ProxyType proxyType() default ProxyType.STATIC;
 
+
     public enum ProxyType{
         INSTANCE,
         STATIC

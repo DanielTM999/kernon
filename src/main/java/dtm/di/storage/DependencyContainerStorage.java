@@ -194,6 +194,16 @@ public class DependencyContainerStorage implements DependencyContainer {
     }
 
     @Override
+    public <T> T newInstance(Class<T> referenceClass, Object... contructorArgs) throws NewInstanceException {
+        throwIfUnload();
+        try{
+            return (T)createObject(referenceClass, false, contructorArgs);
+        }catch (Exception e){
+            throw new NewInstanceException(e.getMessage(), referenceClass, e);
+        }
+    }
+
+    @Override
     public void injectDependencies(Object instance) {
         throwIfUnload();
         if(instance == null) return;
@@ -675,9 +685,30 @@ public class DependencyContainerStorage implements DependencyContainer {
             return (aop) ? proxyObject(instance, clazz) : instance;
         }catch (Exception e) {
             String message = "Erro ao criar Objeto "+clazz+" ==> cause: "+e.getMessage();
-            System.out.println(message);
+            throw new NewInstanceException(message, clazz);
         }
-        return null;
+    }
+
+    private Object createObject(@NonNull Class<?> clazz, boolean aop, Object[] extraConstructorArgs){
+        try {
+            Constructor<?>[] constructors = clazz.getDeclaredConstructors();
+            for (Constructor<?> constructor : constructors) {
+                Parameter[] parameterTypes = constructor.getParameters();
+                Object[] resolvedArgs = tryResolveConstructorArgs(parameterTypes, extraConstructorArgs);
+
+                if (resolvedArgs != null) {
+                    constructor.setAccessible(true);
+                    Object instance = constructor.newInstance(resolvedArgs);
+                    injectDependencies(instance);
+                    return (aop) ? proxyObject(instance, clazz) : instance;
+                }
+            }
+
+            throw new NewInstanceException("Sem construtor alvo", clazz);
+        }catch (Exception e) {
+            String message = "Erro ao criar Objeto "+clazz+" ==> cause: "+e.getMessage();
+            throw new NewInstanceException(message, clazz);
+        }
     }
 
     private Supplier<Object> createActivationFunction(@NonNull Class<?> clazz){
@@ -996,6 +1027,43 @@ public class DependencyContainerStorage implements DependencyContainer {
         visiting.remove(annotationType);
         metaAnnotationCache.put(annotationType, false);
         return false;
+    }
+
+    private Object[] tryResolveConstructorArgs(Parameter[] parameters, Object[] extraArgs) {
+        Object[] args = new Object[parameters.length];
+
+        List<Object> extras = new ArrayList<>();
+        if (extraArgs != null) {
+            Collections.addAll(extras, extraArgs);
+        }
+
+        for (int i = 0; i < parameters.length; i++) {
+            Parameter parameter = parameters[i];
+            Class<?> paramType = parameter.getType();
+
+            Object matchedExtra = null;
+            Iterator<Object> iterator = extras.iterator();
+            while (iterator.hasNext()) {
+                Object candidate = iterator.next();
+                if (candidate != null && paramType.isAssignableFrom(candidate.getClass())) {
+                    matchedExtra = candidate;
+                    iterator.remove();
+                    break;
+                }
+            }
+
+            if (matchedExtra != null) {
+                args[i] = matchedExtra;
+            } else {
+                Object injected = getDependecyObjectByParam(parameter);
+                if (injected == null) {
+                    return null;
+                }
+                args[i] = injected;
+            }
+        }
+
+        return args;
     }
 
 
