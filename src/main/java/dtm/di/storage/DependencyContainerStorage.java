@@ -1,6 +1,7 @@
 package dtm.di.storage;
 
 import dtm.di.annotations.*;
+import dtm.di.common.StopWatch;
 import dtm.di.core.DependencyContainer;
 import dtm.di.exceptions.*;
 import dtm.di.prototypes.Dependency;
@@ -192,6 +193,8 @@ public class DependencyContainerStorage implements DependencyContainer {
             throw new NewInstanceException(e.getMessage(), referenceClass, e);
         }
     }
+
+
 
     @Override
     public <T> T newInstance(Class<T> referenceClass, Object... contructorArgs) throws NewInstanceException {
@@ -626,7 +629,7 @@ public class DependencyContainerStorage implements DependencyContainer {
 
     private void registerExternalBeen(Class<?> configurationsClass, List<Method> methodsList, boolean load) throws InvalidClassRegistrationException{
         try {
-            Object configurationInstance = newInstance(configurationsClass);
+            Object configurationInstance = newInstance(configurationsClass, false);
             for (Method method : methodsList) {
                 Object result = null;
                 Class<?>[] parameterTypes = method.getParameterTypes();
@@ -648,6 +651,7 @@ public class DependencyContainerStorage implements DependencyContainer {
 
 
                 method.setAccessible(true);
+
 
                 result = method.invoke(configurationInstance, args);
 
@@ -692,9 +696,10 @@ public class DependencyContainerStorage implements DependencyContainer {
     private Object createObject(@NonNull Class<?> clazz, boolean aop, Object[] extraConstructorArgs){
         try {
             Constructor<?>[] constructors = clazz.getDeclaredConstructors();
+            List<Parameter> failedParams = new ArrayList<>();
             for (Constructor<?> constructor : constructors) {
                 Parameter[] parameterTypes = constructor.getParameters();
-                Object[] resolvedArgs = tryResolveConstructorArgs(parameterTypes, extraConstructorArgs);
+                Object[] resolvedArgs = tryResolveConstructorArgs(parameterTypes, extraConstructorArgs, failedParams);
 
                 if (resolvedArgs != null) {
                     constructor.setAccessible(true);
@@ -704,7 +709,17 @@ public class DependencyContainerStorage implements DependencyContainer {
                 }
             }
 
-            throw new NewInstanceException("Sem construtor alvo", clazz);
+            String message;
+            if (!failedParams.isEmpty()) {
+                StringBuilder errorMsg = new StringBuilder("Falha ao instanciar " + clazz.getName() + ". Parâmetros não resolvidos:\n");
+                for (Parameter p : failedParams) {
+                    errorMsg.append("- ").append(p.getName()).append(" : ").append(p.getType().getName()).append("\n");
+                }
+                message = errorMsg.toString();
+            }else{
+                message = "Sem construtor aplicável encontrado para " + clazz.getName();
+            }
+            throw new NewInstanceException(message, clazz);
         }catch (Exception e) {
             String message = "Erro ao criar Objeto "+clazz+" ==> cause: "+e.getMessage();
             throw new NewInstanceException(message, clazz);
@@ -1010,9 +1025,9 @@ public class DependencyContainerStorage implements DependencyContainer {
         if (annotationType.equals(baseAnnotation)) {
             return true;
         }
-        if (metaAnnotationCache.containsKey(annotationType)) {
-            return metaAnnotationCache.get(annotationType);
-        }
+//        if (metaAnnotationCache.containsKey(annotationType)) {
+//            return metaAnnotationCache.get(annotationType);
+//        }
         if (!visiting.add(annotationType)) {
             return false;
         }
@@ -1020,16 +1035,16 @@ public class DependencyContainerStorage implements DependencyContainer {
         for (Annotation metaAnnotation : annotationType.getAnnotations()) {
             if (hasMetaAnnotation(metaAnnotation.annotationType(), baseAnnotation, visiting)) {
                 visiting.remove(annotationType);
-                metaAnnotationCache.put(annotationType, true);
+                //metaAnnotationCache.put(annotationType, true);
                 return true;
             }
         }
         visiting.remove(annotationType);
-        metaAnnotationCache.put(annotationType, false);
+        //metaAnnotationCache.put(annotationType, false);
         return false;
     }
 
-    private Object[] tryResolveConstructorArgs(Parameter[] parameters, Object[] extraArgs) {
+    private Object[] tryResolveConstructorArgs(Parameter[] parameters, Object[] extraArgs, List<Parameter> failedParams) {
         Object[] args = new Object[parameters.length];
 
         List<Object> extras = new ArrayList<>();
@@ -1057,6 +1072,9 @@ public class DependencyContainerStorage implements DependencyContainer {
             } else {
                 Object injected = getDependecyObjectByParam(parameter);
                 if (injected == null) {
+                    if (failedParams != null) {
+                        failedParams.add(parameter);
+                    }
                     return null;
                 }
                 args[i] = injected;
@@ -1066,5 +1084,13 @@ public class DependencyContainerStorage implements DependencyContainer {
         return args;
     }
 
+    public <T> T newInstance(Class<T> referenceClass, boolean aop) throws NewInstanceException {
+        throwIfUnload();
+        try{
+            return (T)createObject(referenceClass, false);
+        }catch (Exception e){
+            throw new NewInstanceException(e.getMessage(), referenceClass, e);
+        }
+    }
 
 }
