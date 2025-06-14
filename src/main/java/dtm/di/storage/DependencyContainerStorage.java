@@ -1,6 +1,7 @@
 package dtm.di.storage;
 
 import dtm.di.annotations.*;
+import dtm.di.annotations.aop.DisableAop;
 import dtm.di.common.StopWatch;
 import dtm.di.core.DependencyContainer;
 import dtm.di.exceptions.*;
@@ -307,8 +308,8 @@ public class DependencyContainerStorage implements DependencyContainer {
             }
 
             DependencyObject dependencyObject = isSingleton(dependency)
-                    ? new DependencyObject(dependency, qualifier, true, null, createObject(dependency))
-                    : new DependencyObject(dependency, qualifier, false, createActivationFunction(dependency), null);
+                    ? new DependencyObject(dependency, qualifier, true, null, createObject(dependency, been.isAop()))
+                    : new DependencyObject(dependency, qualifier, false, createActivationFunction(dependency, been.isAop()), null);
 
 
             listOfDependency.add(dependencyObject);
@@ -340,7 +341,7 @@ public class DependencyContainerStorage implements DependencyContainer {
         int order = 0;
         for(Class<?> subClass : listOfRegistration){
             if(!dependencyContainer.containsKey(subClass)){
-                loadBeen(new ServiceBean(subClass, order++), registeringClasses, getQualifierName(subClass));
+                loadBeen(new ServiceBean(subClass, order++, isAop(clazz)), registeringClasses, getQualifierName(subClass));
             }
         }
     }
@@ -382,7 +383,7 @@ public class DependencyContainerStorage implements DependencyContainer {
 
         int order = 0;
         for (Class<?> clazz : ordered) {
-            serviceBeensDefinition.add(new ServiceBean(clazz, order++));
+            serviceBeensDefinition.add(new ServiceBean(clazz, order++, isAop(clazz)));
         }
     }
 
@@ -659,7 +660,8 @@ public class DependencyContainerStorage implements DependencyContainer {
                     String qualifier = getQualifierName(method);
                     boolean singleton = isSingletonBeen(method);
                     if(singleton){
-                        registerDependency(result, qualifier);
+                        boolean aop = (isAop(method) && isAop(result.getClass()));
+                        registerObject(result, qualifier, aop);
                     }else {
                         registerExternalBeenNoSinglenton(result, method, qualifier);
                     }
@@ -671,7 +673,7 @@ public class DependencyContainerStorage implements DependencyContainer {
     }
 
     private Object createObject(@NonNull Class<?> clazz){
-        return createObject(clazz, this.aop);
+        return createObject(clazz, isAop(clazz));
     }
 
     private Object createObject(@NonNull Class<?> clazz, boolean aop){
@@ -728,9 +730,16 @@ public class DependencyContainerStorage implements DependencyContainer {
 
     private Supplier<Object> createActivationFunction(@NonNull Class<?> clazz){
         return () -> {
-            return createObject(clazz);
+            return createObject(clazz, aop);
         };
     }
+
+    private Supplier<Object> createActivationFunction(@NonNull Class<?> clazz, boolean aop){
+        return () -> {
+            return createObject(clazz, aop);
+        };
+    }
+
 
     private Object createWithOutConstructor(@NonNull Class<?> clazz) throws Exception{
         return clazz.getDeclaredConstructor().newInstance();
@@ -861,7 +870,7 @@ public class DependencyContainerStorage implements DependencyContainer {
                         null
                 );
             }
-            ServiceBean serviceBean = new ServiceBean(beenClass, 0);
+            ServiceBean serviceBean = new ServiceBean(beenClass, 0, isAop(instance.getClass()));
 
             loadBeen(serviceBean, new HashSet<>(), qualifier);
         }catch (NoSuchMethodException e) {
@@ -880,7 +889,27 @@ public class DependencyContainerStorage implements DependencyContainer {
     private void registerObject(@NonNull Object dependency, @NonNull String qualifier) throws InvalidClassRegistrationException {
         try {
             final Class<?> clazz = dependency.getClass();
-            final Object toRegistrate = (aop) ? proxyObject(dependency, clazz) : dependency;
+            final Object toRegistrate = isAop(clazz) ? proxyObject(dependency, clazz) : dependency;
+            if(dependencyContainer.containsKey(clazz)) return;
+            final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(clazz, new ArrayList<Dependency>());
+            validQualifier(listOfDependency, qualifier, clazz);
+            DependencyObject dependencyObject = new DependencyObject(clazz, qualifier, true, () -> {return toRegistrate;}, toRegistrate);
+            listOfDependency.add(dependencyObject);
+            dependencyContainer.put(clazz, listOfDependency);
+            registerSubTypes(clazz, listOfDependency);
+        }catch (Exception e) {
+            throw new InvalidClassRegistrationException(
+                    "Erro ao criar a dependencia: " + dependency.getClass()+ " ==> causa: "+e.getMessage(),
+                    dependency.getClass(),
+                    e
+            );
+        }
+    }
+
+    private void registerObject(@NonNull Object dependency, @NonNull String qualifier, boolean aop) throws InvalidClassRegistrationException {
+        try {
+            final Class<?> clazz = dependency.getClass();
+            final Object toRegistrate = aop ? proxyObject(dependency, clazz) : dependency;
             if(dependencyContainer.containsKey(clazz)) return;
             final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(clazz, new ArrayList<Dependency>());
             validQualifier(listOfDependency, qualifier, clazz);
@@ -903,7 +932,7 @@ public class DependencyContainerStorage implements DependencyContainer {
 
         try{
             Supplier<?> activatorFunction;
-            if(aop){
+            if(isAop(registrationFunction.getReferenceClass())){
                 activatorFunction = () -> {
                     Object instance = registrationFunction.getFunction().get();
                     if(instance == null) throw new NullPointerException("Intancia invalida para "+referenceClass);
@@ -1084,13 +1113,25 @@ public class DependencyContainerStorage implements DependencyContainer {
         return args;
     }
 
-    public <T> T newInstance(Class<T> referenceClass, boolean aop) throws NewInstanceException {
+    private <T> T newInstance(Class<T> referenceClass, boolean aop) throws NewInstanceException {
         throwIfUnload();
         try{
-            return (T)createObject(referenceClass, false);
+            return (T)createObject(referenceClass, aop);
         }catch (Exception e){
             throw new NewInstanceException(e.getMessage(), referenceClass, e);
         }
     }
 
+    private boolean isAop(Class<?> clazz){
+        if(clazz.isAnnotationPresent(DisableAop.class)) return false;
+
+        return aop;
+    }
+
+    private boolean isAop(Method method){
+        if(method.isAnnotationPresent(DisableAop.class)) return false;
+
+        return aop;
+    }
+    
 }

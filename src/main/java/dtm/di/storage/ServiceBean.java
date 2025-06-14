@@ -8,6 +8,7 @@ import lombok.Data;
 final class ServiceBean implements Comparable<ServiceBean>{
     private Class<?> clazz;
     private long dependencyOrder;
+    private boolean aop;
 
     @Override
     public int compareTo(ServiceBean o) {
