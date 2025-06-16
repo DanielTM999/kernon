@@ -2,6 +2,10 @@ package dtm.di.storage;
 
 import dtm.di.annotations.*;
 import dtm.di.annotations.aop.DisableAop;
+import dtm.di.annotations.metrics.PrintStremFile;
+import dtm.di.common.ConcurrentStopWatch;
+import dtm.di.common.DefaultStopWatch;
+import dtm.di.common.StopWatch;
 import dtm.di.core.DependencyContainer;
 import dtm.di.exceptions.*;
 import dtm.di.prototypes.Dependency;
@@ -19,8 +23,13 @@ import lombok.NonNull;
 import lombok.Setter;
 
 import java.io.File;
+import java.io.PrintStream;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -29,7 +38,8 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 @SuppressWarnings("unchecked")
-public class DependencyContainerStorage implements DependencyContainer {
+public class DependencyContainerStorageMetrics implements DependencyContainer {
+    private static DependencyContainerStorageMetrics INSTANCE;
     private final Map<Class<?>, List<Dependency>> dependencyContainer;
     private final ClassFinder classFinder;
     private final AtomicBoolean loaded;
@@ -38,7 +48,7 @@ public class DependencyContainerStorage implements DependencyContainer {
     private final Set<Class<?>> loadedSystemClasses;
     private final Map<Class<?>, List<Method>> externalBeenBefore;
     private final Map<Class<?>, List<Method>> externalBeenAfter;
-    private final Map<Class<? extends Annotation>, Boolean> metaAnnotationCache;
+    private final StopWatch stopWatch;
     private final Class<?> mainClass;
     private final List<String> profiles;
     private boolean childrenRegistration;
@@ -49,23 +59,26 @@ public class DependencyContainerStorage implements DependencyContainer {
     @Setter
     private ClassFinderConfigurations classFinderConfigurations;
 
-    public static DependencyContainerStorage getInstance(Class<?> mainClass, String... profiles){
-        if(StaticContainer.getContainerStorage() == null){
-            StaticContainer.setContainerStorage(new DependencyContainerStorage(mainClass, profiles));
+    public static DependencyContainerStorageMetrics getInstance(Class<?> mainClass, String... profiles){
+        if(INSTANCE == null){
+            INSTANCE = new DependencyContainerStorageMetrics(mainClass, profiles);
         }
 
-        return StaticContainer.getContainerStorage();
+        return INSTANCE;
     }
 
-    public static DependencyContainerStorage getLoadedInstance(){
-        if(StaticContainer.getContainerStorage() == null){
+    public static DependencyContainerStorageMetrics getLoadedInstance(){
+        if(INSTANCE == null){
             throw new UnloadError("DependencyContainerStorage unload");
         }
 
-        return StaticContainer.getContainerStorage();
+        return INSTANCE;
     }
 
-    private DependencyContainerStorage(Class<?> mainClass, String... profiles){
+
+
+    private DependencyContainerStorageMetrics(Class<?> mainClass, String... profiles){
+        this.stopWatch = new ConcurrentStopWatch("DependencyContainer");
         this.dependencyContainer = new ConcurrentHashMap<>();
         this.loaded = new AtomicBoolean(false);
         this.classFinder = new ClassFinderService();
@@ -76,7 +89,6 @@ public class DependencyContainerStorage implements DependencyContainer {
         this.loadedSystemClasses = ConcurrentHashMap.newKeySet();
         this.externalBeenBefore = new ConcurrentHashMap<>();
         this.externalBeenAfter = new ConcurrentHashMap<>();
-        this.metaAnnotationCache = new ConcurrentHashMap<>();
         this.classFinderConfigurations = getFindConfigurations();
         this.mainClass = mainClass;
         if(profiles.length > 0){
@@ -92,18 +104,43 @@ public class DependencyContainerStorage implements DependencyContainer {
     @Override
     public void load() throws InvalidClassRegistrationException {
         try{
-            if(isLoaded()) return;
+            stopWatch.start();
+            if(isLoaded()) {
+                stopWatch.lap("check isLoaded");
+                return;
+            }
+            stopWatch.lap("check isLoaded");
+
             loadByPluginFolder();
+            stopWatch.lap("loadByPluginFolder");
+
             loadSystemClasses();
+            stopWatch.lap("loadSystemClasses");
+
             filterServiceClass();
+            stopWatch.lap("filterServiceClass");
+
             filterExternalsBeens();
+            stopWatch.lap("filterExternalsBeens");
+
             loaded.set(true);
+            stopWatch.lap("loaded.set(true)");
+
             selfInjection();
+            stopWatch.lap("selfInjection");
+
             registerExternalBeens(externalBeenBefore);
+            stopWatch.lap("registerExternalBeens before");
+
             loadBeens();
+            stopWatch.lap("loadBeens");
+
             registerExternalBeens(externalBeenAfter);
+            stopWatch.lap("registerExternalBeens after");
         }catch (Exception e){
            throw new UnloadError("load error", e);
+        }finally {
+            CompletableFuture.runAsync(() -> stopWatch.print(getPrintStream()));
         }
     }
 
@@ -288,9 +325,13 @@ public class DependencyContainerStorage implements DependencyContainer {
     }
 
     private void loadBeens() throws InvalidClassRegistrationException{
+        stopWatch.lap("loadBeens start");
         for (ServiceBean service: serviceBeensDefinition){
+            stopWatch.lap("loadBeen -> " + service.getClazz());
             loadBeen(service, new HashSet<>(), getQualifierName(service.getClazz()));
+            stopWatch.lap("loaded -> " + service.getClazz());
         }
+        stopWatch.lap("loadBeens end");
     }
 
     private void loadBeen(ServiceBean been, final Set<Class<?>> registeringClasses, String qualifier) throws InvalidClassRegistrationException{
@@ -364,31 +405,41 @@ public class DependencyContainerStorage implements DependencyContainer {
     }
 
     private void filterServiceClass(){
+        stopWatch.lap("filterServiceClass start");
         final int threshold = 50;
         final Set<Class<?>> serviceLoadedClassActive = getConcreteServiceLoadedClass(Component.class);
+        stopWatch.lap("load concrete service classes");
 
         final int total = serviceLoadedClassActive.size();
 
         final Map<Class<?>, Set<Class<?>>> dependencyGraph = new ConcurrentHashMap<>();
 
         if (total < threshold) {
+            stopWatch.lap("dependency graph using parallel stream");
             processDependencyServiceWithParallelStream(dependencyGraph, serviceLoadedClassActive);
         } else {
+            stopWatch.lap("dependency graph using executor service");
             processDependencyServiceWithExecutorService(dependencyGraph, serviceLoadedClassActive);
         }
+        stopWatch.lap("dependency graph processed");
 
         List<Class<?>> ordered = TopologicalSorter.sort(serviceLoadedClassActive, dependencyGraph);
+        stopWatch.lap("topological sort");
 
         int order = 0;
         for (Class<?> clazz : ordered) {
             serviceBeensDefinition.add(new ServiceBean(clazz, order++, isAop(clazz)));
         }
+        stopWatch.lap("create ServiceBean definition");
     }
 
     private void loadByPluginFolder(){
+        stopWatch.lap("loadByPluginFolder start");
         for (String forderPath : foldersToLoad){
             classFinder.loadByDirectory(forderPath);
+            stopWatch.lap("loadByPluginFolder - " + forderPath);
         }
+        stopWatch.lap("loadByPluginFolder end");
     }
 
     private ClassFinderConfigurations getFindConfigurations(){
@@ -992,11 +1043,15 @@ public class DependencyContainerStorage implements DependencyContainer {
     }
 
     private void loadSystemClasses(){
+        stopWatch.lap("loadSystemClasses start");
         if(mainClass != null){
             loadedSystemClasses.addAll(classFinder.find(mainClass, classFinderConfigurations));
+            stopWatch.lap("find all by mainClass classes");
         }else{
             loadedSystemClasses.addAll(classFinder.find(classFinderConfigurations));
+            stopWatch.lap("find all classes");
         }
+        stopWatch.lap("loadSystemClasses end");
     }
 
     private boolean filterConcreteBean(Class<?> clazz, Class<? extends Annotation> annotation){
@@ -1111,20 +1166,6 @@ public class DependencyContainerStorage implements DependencyContainer {
         return args;
     }
 
-    private Constructor<?> selectContruct(Constructor<?>[] contructors, Class<?> clazz){
-        for (Constructor<?> constructor : contructors){
-            boolean allMatch = true;
-            for (Class<?> paramType : constructor.getParameterTypes()){
-                if (!dependencyContainer.containsKey(paramType)) {
-                    allMatch = false;
-                    break;
-                }
-            }
-            if(allMatch) return constructor;
-        }
-        throw new NewInstanceException("construtor não encontrado para: "+clazz, clazz);
-    }
-
     private <T> T newInstance(Class<T> referenceClass, boolean aop) throws NewInstanceException {
         throwIfUnload();
         try{
@@ -1145,5 +1186,31 @@ public class DependencyContainerStorage implements DependencyContainer {
 
         return aop;
     }
-    
+
+
+    private PrintStream getPrintStream(){
+        try{
+            if(mainClass.isAnnotationPresent(PrintStremFile.class)){
+                PrintStremFile printStremFile = mainClass.getAnnotation(PrintStremFile.class);
+                String path = printStremFile.value();
+                path = path.replace("${user.home}", System.getProperty("user.home"));
+                path = path.replace("${user.dir}", System.getProperty("user.dir"));
+
+                Path filePath = Paths.get(path);
+                Path parent = filePath.getParent();
+
+                if (parent != null) {
+                    Files.createDirectories(parent);
+                }
+
+                if (!Files.exists(filePath)) {
+                    Files.createFile(filePath);
+                }
+                return new PrintStream(Files.newOutputStream(filePath, StandardOpenOption.APPEND));
+            }
+            return System.out;
+        }catch (Exception e){
+            return System.out;
+        }
+    }
 }

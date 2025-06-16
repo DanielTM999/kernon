@@ -1,5 +1,6 @@
 package dtm.di.startup;
 
+import dtm.di.annotations.DependencyContainerFactory;
 import dtm.di.annotations.boot.OnBootFail;
 import dtm.di.annotations.schedule.EnableSchedule;
 import dtm.di.annotations.aop.DisableAop;
@@ -13,6 +14,7 @@ import dtm.di.core.DependencyContainer;
 import dtm.di.exceptions.InvalidClassRegistrationException;
 import dtm.di.exceptions.boot.InvalidBootException;
 import dtm.di.storage.DependencyContainerStorage;
+import dtm.di.storage.DependencyContainerStorageMetrics;
 import dtm.discovery.core.ClassFinderConfigurations;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -137,10 +139,27 @@ public class ManagedApplicationStartup {
     }
 
     private static DependencyContainer getDependencyContainer(){
-        DependencyContainerStorage dependencyContainerStorage = DependencyContainerStorage.getInstance(mainClass);
-        applyPeckageScan(dependencyContainerStorage.getClassFinderConfigurations());
 
-        return dependencyContainerStorage;
+        DependencyContainerFactory containerFactory = bootableClass.getAnnotation(DependencyContainerFactory.class);
+
+        if(containerFactory != null){
+            Class<?> clazz = containerFactory.value();
+            if(clazz.equals(DependencyContainerStorageMetrics.class)){
+                DependencyContainerStorageMetrics dependencyContainerStorage = DependencyContainerStorageMetrics.getInstance(mainClass);
+                applyPeckageScan(dependencyContainerStorage.getClassFinderConfigurations());
+                return dependencyContainerStorage;
+            }else{
+                DependencyContainerStorage dependencyContainerStorage = DependencyContainerStorage.getInstance(mainClass);
+                applyPeckageScan(dependencyContainerStorage.getClassFinderConfigurations());
+                return dependencyContainerStorage;
+            }
+        }else{
+            DependencyContainerStorage dependencyContainerStorage = DependencyContainerStorage.getInstance(mainClass);
+            applyPeckageScan(dependencyContainerStorage.getClassFinderConfigurations());
+
+            return dependencyContainerStorage;
+        }
+
     }
 
     private static Map<LifecycleHook.Event, List<Method>> getEventMethodMap() {
