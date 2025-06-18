@@ -10,11 +10,13 @@ import dtm.di.annotations.boot.OnBoot;
 import dtm.di.annotations.scanner.PackageScanIgnore;
 import dtm.di.annotations.schedule.Schedule;
 import dtm.di.annotations.schedule.ScheduleMethod;
+import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
 import dtm.di.exceptions.InvalidClassRegistrationException;
 import dtm.di.exceptions.boot.InvalidBootException;
-import dtm.di.storage.DependencyContainerStorage;
-import dtm.di.storage.DependencyContainerStorageMetrics;
+import dtm.di.storage.StaticContainer;
+import dtm.di.storage.containers.DependencyContainerStorage;
+import dtm.di.storage.containers.DependencyContainerStorageMetrics;
 import dtm.discovery.core.ClassFinderConfigurations;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -143,16 +145,24 @@ public class ManagedApplicationStartup {
         DependencyContainerFactory containerFactory = bootableClass.getAnnotation(DependencyContainerFactory.class);
 
         if(containerFactory != null){
-            Class<?> clazz = containerFactory.value();
-            if(clazz.equals(DependencyContainerStorageMetrics.class)){
-                DependencyContainerStorageMetrics dependencyContainerStorage = DependencyContainerStorageMetrics.getInstance(mainClass);
-                applyPeckageScan(dependencyContainerStorage.getClassFinderConfigurations());
-                return dependencyContainerStorage;
-            }else{
+
+
+            Class<? extends DependencyContainer> clazz = containerFactory.value();
+            DependencyContainer dependencyContainer = StaticContainer.getDependencyContainer(clazz);
+
+            if(dependencyContainer == null){
                 DependencyContainerStorage dependencyContainerStorage = DependencyContainerStorage.getInstance(mainClass);
                 applyPeckageScan(dependencyContainerStorage.getClassFinderConfigurations());
                 return dependencyContainerStorage;
             }
+
+            if(dependencyContainer instanceof  ClassFinderDependencyContainer dependencyContainerStorage){
+                applyPeckageScan(dependencyContainerStorage.getClassFinderConfigurations());
+                return dependencyContainerStorage;
+            }else{
+                return dependencyContainer;
+            }
+
         }else{
             DependencyContainerStorage dependencyContainerStorage = DependencyContainerStorage.getInstance(mainClass);
             applyPeckageScan(dependencyContainerStorage.getClassFinderConfigurations());

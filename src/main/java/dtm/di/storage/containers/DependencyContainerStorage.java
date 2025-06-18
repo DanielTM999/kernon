@@ -1,7 +1,8 @@
-package dtm.di.storage;
+package dtm.di.storage.containers;
 
 import dtm.di.annotations.*;
 import dtm.di.annotations.aop.DisableAop;
+import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
 import dtm.di.exceptions.*;
 import dtm.di.prototypes.Dependency;
@@ -9,6 +10,10 @@ import dtm.di.prototypes.LazyDependency;
 import dtm.di.prototypes.RegistrationFunction;
 import dtm.di.prototypes.proxy.ProxyFactory;
 import dtm.di.sort.TopologicalSorter;
+import dtm.di.storage.ClassFinderConfigurationsStorage;
+import dtm.di.storage.DependencyObject;
+import dtm.di.storage.ServiceBean;
+import dtm.di.storage.StaticContainer;
 import dtm.di.storage.lazy.Lazy;
 import dtm.di.storage.lazy.LazyObject;
 import dtm.discovery.core.ClassFinder;
@@ -31,7 +36,7 @@ import java.util.stream.Collectors;
 
 @Slf4j
 @SuppressWarnings("unchecked")
-public class DependencyContainerStorage implements DependencyContainer {
+public class DependencyContainerStorage implements DependencyContainer, ClassFinderDependencyContainer {
 
     private final ExecutorService mainExecutor;
     private final ExecutorService mainVirtualExecutor;
@@ -62,19 +67,20 @@ public class DependencyContainerStorage implements DependencyContainer {
     private ClassFinderConfigurations classFinderConfigurations;
 
     public static DependencyContainerStorage getInstance(Class<?> mainClass, String... profiles){
-        if(StaticContainer.getContainerStorage() == null){
-            StaticContainer.setContainerStorage(new DependencyContainerStorage(mainClass, profiles));
+        DependencyContainerStorage containerStorage = StaticContainer.getDependencyContainer(DependencyContainerStorage.class);
+        if(containerStorage == null){
+            return StaticContainer.trySetDependencyContainer(new DependencyContainerStorage(mainClass, profiles));
         }
-
-        return StaticContainer.getContainerStorage();
+        return containerStorage;
     }
 
     public static DependencyContainerStorage getLoadedInstance(){
-        if(StaticContainer.getContainerStorage() == null){
+        DependencyContainerStorage containerStorage = StaticContainer.getDependencyContainer(DependencyContainerStorage.class);
+        if(containerStorage == null){
             throw new UnloadError("DependencyContainerStorage unload");
         }
 
-        return StaticContainer.getContainerStorage();
+        return containerStorage;
     }
 
     private DependencyContainerStorage(Class<?> mainClass, String... profiles){

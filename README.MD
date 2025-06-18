@@ -273,92 +273,92 @@ import dtm.di.annotations.*;
 import dtm.di.annotations.aop.Aspect;
 import dtm.di.annotations.aop.BeforeExecution;
 import dtm.di.annotations.aop.Pointcut;
-import dtm.di.storage.DependencyContainerStorage;
+import dtm.di.storage.containers.DependencyContainerStorage;
 import dtm.di.core.DependencyContainer;
 
 public class Main {
 
-    private final MainService1 mainService1;
+  private final MainService1 mainService1;
 
-    @Inject
-    @Qualifier("MainService2")
-    private MainService2 mainService2;
+  @Inject
+  @Qualifier("MainService2")
+  private MainService2 mainService2;
 
-    @Inject(qualifier = "MainService3")
-    private MainService3 mainService3;
+  @Inject(qualifier = "MainService3")
+  private MainService3 mainService3;
 
-    public Main(MainService1 mainService) {
-        this.mainService = mainService;
+  public Main(MainService1 mainService) {
+    this.mainService = mainService;
+  }
+
+  public static void main(String[] args) {
+    DependencyContainer dependencyContainer = DependencyContainerStorage.getInstance(Main.clas);
+    dependencyContainer.enableParallelInjection();
+    dependencyContainer.enableAOP();
+    dependencyContainer.load();
+
+    Main mainClass1 = dependencyContainer.newInstance(Main.class);
+
+    Main mainClass2 = new Main(new MainService1());
+    dependencyContainer.injectDependencies(mainClass2);
+  }
+
+  @Singleton
+  @Service
+  public static class MainService1 {
+
+    public void action() {
+      System.out.println("MainService1.action");
+    }
+  }
+
+  @Qualifier("MainService2")
+  @Service
+  public static class MainService2 {
+
+    public void action() {
+      System.out.println("MainService2.action");
+    }
+  }
+
+  @Service
+  public static class MainService3 {
+
+    public void action() {
+      System.out.println("MainService3.action");
+    }
+  }
+
+  @Aspect
+  public static class MainAspect {
+
+    @Pointcut
+    public boolean pointcut(Method method, Object[] args, @ProxyInstance Object proxy) {
+      return true;
     }
 
-    public static void main(String[] args) {
-        DependencyContainer dependencyContainer = DependencyContainerStorage.getInstance(Main.clas);
-        dependencyContainer.enableParallelInjection();
-        dependencyContainer.enableAOP();
-        dependencyContainer.load();
-
-        Main mainClass1 = dependencyContainer.newInstance(Main.class);
-
-        Main mainClass2 = new Main(new MainService1());
-        dependencyContainer.injectDependencies(mainClass2);
-    }
-
-    @Singleton
-    @Service
-    public static class MainService1 {
-
-        public void action() {
-            System.out.println("MainService1.action");
-        }
-    }
-
-    @Qualifier("MainService2")
-    @Service
-    public static class MainService2 {
-
-        public void action() {
-            System.out.println("MainService2.action");
-        }
-    }
-
-    @Service
-    public static class MainService3 {
-
-        public void action() {
-            System.out.println("MainService3.action");
-        }
-    }
-
-    @Aspect
-    public static class MainAspect {
-
-        @Pointcut
-        public boolean pointcut(Method method, Object[] args, @ProxyInstance Object proxy) {
-            return true;
-        }
-
-        @BeforeExecution
-        public void before(Method method, Object[] args, @ProxyInstance Object proxy) {
-
-        }
-
-        @BeforeExecution
-        public Object after(Method method, Object[] args, @ProxyInstance Object proxy, @ResultProxy Object currentResult) {
-            return currentResult;
-        }
+    @BeforeExecution
+    public void before(Method method, Object[] args, @ProxyInstance Object proxy) {
 
     }
 
-    @Configuration
-    public static class MinhaConfig {
-
-        // BeanDefinition.ProxyType.INSTANCE para não simgleton mas cuidado pois o não singleton ele recontroi a intancia
-        @BeanDefinition(proxyType = BeanDefinition.ProxyType.STATIC)
-        @Service(qualifier = "MainService3")
-        public MainService3 mainService3() {
-            return new MainService3();
-        }
+    @BeforeExecution
+    public Object after(Method method, Object[] args, @ProxyInstance Object proxy, @ResultProxy Object currentResult) {
+      return currentResult;
     }
+
+  }
+
+  @Configuration
+  public static class MinhaConfig {
+
+    // BeanDefinition.ProxyType.INSTANCE para não simgleton mas cuidado pois o não singleton ele recontroi a intancia
+    @BeanDefinition(proxyType = BeanDefinition.ProxyType.STATIC)
+    @Service(qualifier = "MainService3")
+    public MainService3 mainService3() {
+      return new MainService3();
+    }
+  }
 
 }
 ```

@@ -1,7 +1,7 @@
 package dtm.di.annotations;
 
 import dtm.di.core.DependencyContainer;
-import dtm.di.storage.DependencyContainerStorage;
+import dtm.di.storage.containers.DependencyContainerStorage;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;

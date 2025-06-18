@@ -1,11 +1,11 @@
-package dtm.di.storage;
+package dtm.di.storage.containers;
 
 import dtm.di.annotations.*;
 import dtm.di.annotations.aop.DisableAop;
 import dtm.di.annotations.metrics.PrintStremFile;
 import dtm.di.common.ConcurrentStopWatch;
-import dtm.di.common.DefaultStopWatch;
 import dtm.di.common.StopWatch;
+import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
 import dtm.di.exceptions.*;
 import dtm.di.prototypes.Dependency;
@@ -13,6 +13,10 @@ import dtm.di.prototypes.LazyDependency;
 import dtm.di.prototypes.RegistrationFunction;
 import dtm.di.prototypes.proxy.ProxyFactory;
 import dtm.di.sort.TopologicalSorter;
+import dtm.di.storage.ClassFinderConfigurationsStorage;
+import dtm.di.storage.DependencyObject;
+import dtm.di.storage.ServiceBean;
+import dtm.di.storage.StaticContainer;
 import dtm.di.storage.lazy.Lazy;
 import dtm.di.storage.lazy.LazyObject;
 import dtm.discovery.core.ClassFinder;
@@ -21,7 +25,6 @@ import dtm.discovery.finder.ClassFinderService;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.Setter;
-
 import java.io.File;
 import java.io.PrintStream;
 import java.lang.annotation.Annotation;
@@ -38,8 +41,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 @SuppressWarnings("unchecked")
-public class DependencyContainerStorageMetrics implements DependencyContainer {
-    private static DependencyContainerStorageMetrics INSTANCE;
+public class DependencyContainerStorageMetrics implements DependencyContainer, ClassFinderDependencyContainer {
     private final StopWatch stopWatch;
     private final ExecutorService mainExecutor;
     private final ExecutorService mainVirtualExecutor;
@@ -70,19 +72,20 @@ public class DependencyContainerStorageMetrics implements DependencyContainer {
     private ClassFinderConfigurations classFinderConfigurations;
 
     public static DependencyContainerStorageMetrics getInstance(Class<?> mainClass, String... profiles){
-        if(INSTANCE == null){
-            INSTANCE = new DependencyContainerStorageMetrics(mainClass, profiles);
+        DependencyContainerStorageMetrics containerStorage = StaticContainer.getDependencyContainer(DependencyContainerStorageMetrics.class);
+        if(containerStorage == null){
+            return StaticContainer.trySetDependencyContainer(new DependencyContainerStorageMetrics(mainClass, profiles));
         }
-
-        return INSTANCE;
+        return containerStorage;
     }
 
     public static DependencyContainerStorageMetrics getLoadedInstance(){
-        if(INSTANCE == null){
+        DependencyContainerStorageMetrics containerStorage = StaticContainer.getDependencyContainer(DependencyContainerStorageMetrics.class);
+        if(containerStorage == null){
             throw new UnloadError("DependencyContainerStorage unload");
         }
 
-        return INSTANCE;
+        return containerStorage;
     }
 
 

@@ -5,7 +5,7 @@ import lombok.Data;
 
 @Data
 @AllArgsConstructor
-final class ServiceBean implements Comparable<ServiceBean>{
+public final class ServiceBean implements Comparable<ServiceBean>{
     private Class<?> clazz;
     private long dependencyOrder;
     private boolean aop;
