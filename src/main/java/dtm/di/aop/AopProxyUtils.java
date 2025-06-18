@@ -11,6 +11,24 @@ import java.lang.reflect.Method;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+/**
+ * 🚫 API INTERNA DO FRAMEWORK 🚫
+ * <p>
+ * Implementação do serviço interno de AOP (Aspect-Oriented Programming) do framework.
+ * <p>
+ * Essa classe não faz parte da API pública e não deve ser utilizada diretamente pelos usuários do framework.
+ * Seu objetivo é fornecer a implementação de como o mecanismo de AOP funciona por trás dos panos dentro do
+ * container de injeção de dependências.
+ * <p>
+ * Essa classe é responsável por gerenciar, executar e controlar os aspectos declarados com as anotações:
+ * {@link dtm.di.annotations.aop.Aspect}, {@link dtm.di.annotations.aop.Pointcut},
+ * {@link dtm.di.annotations.aop.BeforeExecution} e {@link dtm.di.annotations.aop.AfterExecution}.
+ * <p>
+ * ✔️ Isso existe única e exclusivamente para ser o serviço interno de AOP do framework, garantindo que a
+ * interceptação e execução dos aspectos aconteça corretamente.
+ * <p>
+ * ❗ O usuário final não interage com essa classe e, em teoria, nem precisa saber que ela existe.
+ */
 public class AopProxyUtils extends AopUtils {
     private static volatile AopProxyUtils aopProxyUtils;
 
@@ -23,6 +41,14 @@ public class AopProxyUtils extends AopUtils {
         createAspects();
     }
 
+    /**
+     * Executa todos os métodos anotados com {@link BeforeExecution} para os aspectos registrados,
+     * desde que o {@link Pointcut} (se existir) retorne {@code true}.
+     *
+     * @param method Método alvo que será executado.
+     * @param args Argumentos que serão passados para o método alvo.
+     * @param proxy Instância proxy (ou objeto real) no qual o método será executado.
+     */
     @Override
     public void applyBefore(Method method, Object[] args, Object proxy) {
         for (AspectHandler handler : handlers) {
@@ -49,6 +75,19 @@ public class AopProxyUtils extends AopUtils {
 
     }
 
+    /**
+     * Executa todos os métodos anotados com {@link AfterExecution} para os aspectos registrados,
+     * desde que o {@link Pointcut} (se existir) retorne {@code true}.
+     * <p>
+     * Se o método {@code @AfterExecution} retornar um valor não nulo e compatível com o tipo de retorno
+     * do método interceptado, esse valor substituirá o resultado original.
+     *
+     * @param method Método alvo que foi executado.
+     * @param args Argumentos que foram passados para o método alvo.
+     * @param proxy Instância proxy (ou objeto real) no qual o método foi executado.
+     * @param currentResult Resultado atual da execução do método alvo.
+     * @return O resultado final, podendo ser o original ou um valor alterado pelo aspecto {@code @AfterExecution}.
+     */
     @Override
     public Object applyAfter(Method method, Object[] args, Object proxy, Object currentResult) {
         Object result = currentResult;
@@ -83,6 +122,12 @@ public class AopProxyUtils extends AopUtils {
         return result;
     }
 
+    /**
+     * Responsável por escanear todas as classes registradas no container que estão anotadas com {@link Aspect}.
+     * <p>
+     * Para cada classe encontrada, registra os métodos anotados com {@link Pointcut}, {@link BeforeExecution} e
+     * {@link AfterExecution}, armazenando-os na coleção interna {@code handlers}.
+     */
     private void createAspects(){
         Set<Class<?>> aspects = dependencyContainer
                 .getLoadedSystemClasses()
@@ -110,6 +155,15 @@ public class AopProxyUtils extends AopUtils {
         }
     }
 
+    /**
+     * Avalia se o aspecto deve ser aplicado a um determinado método, com base na execução do método {@code @Pointcut}.
+     *
+     * @param handler Handler do aspecto contendo referências para os métodos {@code pointcut}, {@code before} e {@code after}.
+     * @param method Método alvo.
+     * @param args Argumentos do método alvo.
+     * @param proxy Instância proxy (ou objeto real).
+     * @return {@code true} se deve aplicar o aspecto, {@code false} caso contrário.
+     */
     private boolean shouldApplyHandler(AspectHandler handler, Method method, Object[] args, Object proxy) {
         if (handler.pointcut == null) return true;
         try {
@@ -121,7 +175,24 @@ public class AopProxyUtils extends AopUtils {
     }
 
 
-    public Object executeMethod(
+    /**
+     * Executa um método do aspecto, resolvendo automaticamente os parâmetros anotados com:
+     * <ul>
+     *     <li>{@link ProxyInstance} → injeta o proxy da classe alvo</li>
+     *     <li>{@link ResultProxy} → injeta o resultado atual da execução do método alvo (somente em {@code after})</li>
+     *     <li>{@code Method} → injeta a referência do método alvo interceptado</li>
+     *     <li>{@code Object[]} → injeta os argumentos do método interceptado</li>
+     * </ul>
+     *
+     * @param instance Instância da classe do aspecto.
+     * @param methodExecute Método a ser executado.
+     * @param methodArgs Referência do método alvo interceptado.
+     * @param args Argumentos do método alvo interceptado.
+     * @param proxy Proxy da instância alvo.
+     * @return Resultado da execução do método do aspecto.
+     * @throws Exception Caso ocorra algum erro na invocação do método.
+     */
+    private Object executeMethod(
             Object instance,
             Method methodExecute,
             Method methodArgs,
@@ -131,7 +202,25 @@ public class AopProxyUtils extends AopUtils {
         return executeMethod(instance, methodExecute, methodArgs, args, proxy, null);
     }
 
-    public Object executeMethod(
+    /**
+     * Executa um método do aspecto, resolvendo automaticamente os parâmetros anotados com:
+     * <ul>
+     *     <li>{@link ProxyInstance} → injeta o proxy da classe alvo</li>
+     *     <li>{@link ResultProxy} → injeta o resultado atual da execução do método alvo (somente em {@code after})</li>
+     *     <li>{@code Method} → injeta a referência do método alvo interceptado</li>
+     *     <li>{@code Object[]} → injeta os argumentos do método interceptado</li>
+     * </ul>
+     *
+     * @param instance Instância da classe do aspecto.
+     * @param methodExecute Método a ser executado.
+     * @param methodArgs Referência do método alvo interceptado.
+     * @param args Argumentos do método alvo interceptado.
+     * @param proxy Proxy da instância alvo.
+     * @param currentResult Resultado atual do método alvo (somente em {@code after}).
+     * @return Resultado da execução do método do aspecto.
+     * @throws Exception Caso ocorra algum erro na invocação do método.
+     */
+    private Object executeMethod(
             Object instance,
             Method methodExecute,
             Method methodArgs,
@@ -166,9 +255,29 @@ public class AopProxyUtils extends AopUtils {
         return methodExecute.invoke(instance, invokeArgs);
     }
 
+    /**
+     * Representa um handler de aspecto contendo:
+     * <ul>
+     *     <li>Instância do aspecto</li>
+     *     <li>Método {@code @Pointcut} (opcional)</li>
+     *     <li>Método {@code @BeforeExecution} (opcional)</li>
+     *     <li>Método {@code @AfterExecution} (opcional)</li>
+     * </ul>
+     *
+     * @param instance Instância da classe anotada com {@link Aspect}.
+     * @param pointcut Método anotado com {@link Pointcut}.
+     * @param before Método anotado com {@link BeforeExecution}.
+     * @param after Método anotado com {@link AfterExecution}.
+     */
     public record AspectHandler(Object instance, Method pointcut, Method before, Method after) {
     }
 
+    /**
+     * Singleton para obter a instância de {@link AopProxyUtils} associada ao {@link DependencyContainer}.
+     *
+     * @param dependencyContainer Container de injeção de dependências onde os aspectos estão registrados.
+     * @return Instância singleton de {@link AopProxyUtils}.
+     */
     public static AopUtils getInstance(DependencyContainer dependencyContainer) {
         if (aopProxyUtils == null) {
             synchronized (AopProxyUtils.class) {

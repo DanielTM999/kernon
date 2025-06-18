@@ -1,25 +1,22 @@
 package dtm.di.storage;
 
 import dtm.di.prototypes.Dependency;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.EqualsAndHashCode;
-import lombok.ToString;
+import lombok.*;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.function.Supplier;
 
 @Data
 @ToString
 @AllArgsConstructor
+@Builder
 @EqualsAndHashCode(callSuper = false)
 public class DependencyObject extends Dependency {
-
     private Class<?> dependencyClass;
-
     private String qualifier;
-
     private boolean singleton;
 
     @ToString.Exclude
@@ -27,6 +24,7 @@ public class DependencyObject extends Dependency {
 
     @ToString.Exclude
     private Object singletonInstance;
+
 
     @Override
     public Object getDependency() {

@@ -17,6 +17,7 @@ import dtm.discovery.finder.ClassFinderService;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.Setter;
+import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
 import java.lang.annotation.Annotation;
@@ -28,22 +29,33 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+@Slf4j
 @SuppressWarnings("unchecked")
 public class DependencyContainerStorage implements DependencyContainer {
+
+    private final ExecutorService mainExecutor;
+    private final ExecutorService mainVirtualExecutor;
+
     private final Map<Class<?>, List<Dependency>> dependencyContainer;
     private final ClassFinder classFinder;
     private final AtomicBoolean loaded;
+
     private final List<String> foldersToLoad;
+
     private final List<ServiceBean> serviceBeensDefinition;
+    private final List<Set<ServiceBean>> serviceBeensDefinitionLayer;
+
     private final Set<Class<?>> loadedSystemClasses;
+
     private final Map<Class<?>, List<Method>> externalBeenBefore;
     private final Map<Class<?>, List<Method>> externalBeenAfter;
-    private final Map<Class<? extends Annotation>, Boolean> metaAnnotationCache;
+
     private final Class<?> mainClass;
     private final List<String> profiles;
     private boolean childrenRegistration;
     private boolean parallelInjection;
     private boolean aop;
+    private boolean processInlayer = true;
 
     @Getter
     @Setter
@@ -66,6 +78,8 @@ public class DependencyContainerStorage implements DependencyContainer {
     }
 
     private DependencyContainerStorage(Class<?> mainClass, String... profiles){
+        this.mainExecutor = Executors.newFixedThreadPool(Math.max(4, Runtime.getRuntime().availableProcessors()));
+        this.mainVirtualExecutor = Executors.newVirtualThreadPerTaskExecutor();
         this.dependencyContainer = new ConcurrentHashMap<>();
         this.loaded = new AtomicBoolean(false);
         this.classFinder = new ClassFinderService();
@@ -74,9 +88,9 @@ public class DependencyContainerStorage implements DependencyContainer {
         this.foldersToLoad = new ArrayList<>();
         this.serviceBeensDefinition = new Vector<>();
         this.loadedSystemClasses = ConcurrentHashMap.newKeySet();
+        this.serviceBeensDefinitionLayer = Collections.synchronizedList(new ArrayList<>());
         this.externalBeenBefore = new ConcurrentHashMap<>();
         this.externalBeenAfter = new ConcurrentHashMap<>();
-        this.metaAnnotationCache = new ConcurrentHashMap<>();
         this.classFinderConfigurations = getFindConfigurations();
         this.mainClass = mainClass;
         if(profiles.length > 0){
@@ -193,8 +207,6 @@ public class DependencyContainerStorage implements DependencyContainer {
         }
     }
 
-
-
     @Override
     public <T> T newInstance(Class<T> referenceClass, Object... contructorArgs) throws NewInstanceException {
         throwIfUnload();
@@ -219,18 +231,16 @@ public class DependencyContainerStorage implements DependencyContainer {
                 .toList();
 
         if(parallelInjection){
-            final List<Future<?>> tasks = new ArrayList<>();
-            try(ExecutorService executorService = (listOfRegistration.size() > 10) ? Executors.newCachedThreadPool() : Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())){
-                for (Field variable : listOfRegistration) {
-                    tasks.add(executorService.submit(() -> injectVariable(variable, instance)));
-                }
+            final List<CompletableFuture<?>> tasks = new ArrayList<>();
+            ExecutorService executorService = (listOfRegistration.size() > 10) ? mainExecutor : mainVirtualExecutor;
+            for (Field variable : listOfRegistration) {
+                CompletableFuture<?> task = CompletableFuture.runAsync(() -> {
+                    injectVariable(variable, instance);
+                }, executorService);
+                tasks.add(task);
             }
 
-            for (Future<?> task : tasks) {
-                try {
-                    task.get();
-                } catch (InterruptedException | ExecutionException ignored) {}
-            }
+            CompletableFuture.allOf(tasks.toArray(CompletableFuture[]::new)).join();
         }else{
             for (Field variable : listOfRegistration) {
                 injectVariable(variable, instance);
@@ -288,6 +298,45 @@ public class DependencyContainerStorage implements DependencyContainer {
     }
 
     private void loadBeens() throws InvalidClassRegistrationException{
+        if(processInlayer){
+            loadBeensInlayer();
+        }else{
+            loadBeensTopological();
+        }
+    }
+
+    private void loadBeensInlayer() throws InvalidClassRegistrationException{
+        for (Set<ServiceBean> layer : serviceBeensDefinitionLayer) {
+            loadBeensInlayer(layer);
+        }
+    }
+
+    private void loadBeensInlayer(Set<ServiceBean> layer) throws InvalidClassRegistrationException{
+        List<CompletableFuture<?>> tasks = new ArrayList<>();
+        for (ServiceBean serviceBean : layer) {
+            CompletableFuture<?> task = CompletableFuture.runAsync(() -> {
+                try {
+                    loadBeen(serviceBean, new HashSet<>(), getQualifierName(serviceBean.getClazz()));
+                } catch (InvalidClassRegistrationException e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            tasks.add(task);
+        }
+
+        try {
+            CompletableFuture.allOf(tasks.toArray(new CompletableFuture[0])).join();
+        }catch (RuntimeException e){
+            Throwable cause = e.getCause();
+            if (cause instanceof InvalidClassRegistrationException) {
+                throw (InvalidClassRegistrationException) cause;
+            } else {
+                throw e;
+            }
+        }
+    }
+
+    private void loadBeensTopological() throws InvalidClassRegistrationException{
         for (ServiceBean service: serviceBeensDefinition){
             loadBeen(service, new HashSet<>(), getQualifierName(service.getClazz()));
         }
@@ -305,9 +354,22 @@ public class DependencyContainerStorage implements DependencyContainer {
                 registerAutoInject(dependency, registeringClasses);
             }
 
-            DependencyObject dependencyObject = isSingleton(dependency)
-                    ? new DependencyObject(dependency, qualifier, true, null, createObject(dependency, been.isAop()))
-                    : new DependencyObject(dependency, qualifier, false, createActivationFunction(dependency, been.isAop()), null);
+            boolean singleton = isSingleton(dependency);
+            DependencyObject dependencyObject = singleton
+                   ? DependencyObject.builder()
+                            .dependencyClass(dependency)
+                            .qualifier(qualifier)
+                            .singleton(true)
+                            .creatorFunction(null)
+                            .singletonInstance(createObject(dependency, been.isAop()))
+                        .build()
+                   : DependencyObject.builder()
+                            .dependencyClass(dependency)
+                            .qualifier(qualifier)
+                            .singleton(false)
+                            .creatorFunction(createActivationFunction(dependency, been.isAop()))
+                            .singletonInstance(null)
+                        .build();
 
 
             listOfDependency.add(dependencyObject);
@@ -352,8 +414,6 @@ public class DependencyContainerStorage implements DependencyContainer {
             throw new InvalidClassRegistrationException("Dependência circular detectada: " + dependency.getName(), dependency);
         }
         registeringClasses.add(dependency);
-
-
     }
 
     private void validQualifier(final List<Dependency> listOfDependency, String qualifier, Class<?> dependency) throws InvalidClassRegistrationException{
@@ -377,11 +437,27 @@ public class DependencyContainerStorage implements DependencyContainer {
             processDependencyServiceWithExecutorService(dependencyGraph, serviceLoadedClassActive);
         }
 
-        List<Class<?>> ordered = TopologicalSorter.sort(serviceLoadedClassActive, dependencyGraph);
+        if(processInlayer){
+            List<Set<Class<?>>> classLayers = groupByDependencyLayer(serviceLoadedClassActive, dependencyGraph);
 
-        int order = 0;
-        for (Class<?> clazz : ordered) {
-            serviceBeensDefinition.add(new ServiceBean(clazz, order++, isAop(clazz)));
+            int order = 0;
+            for (Set<Class<?>> classSet : classLayers) {
+                int layerOrder = order;
+                Set<ServiceBean> layer = ConcurrentHashMap.newKeySet();
+
+                classSet.parallelStream().forEach(clazz -> {
+                    layer.add(new ServiceBean(clazz, layerOrder, isAop(clazz)));
+                });
+
+                serviceBeensDefinitionLayer.add(layer);
+                order++;
+            }
+        }else{
+            Set<Class<?>> ordered = TopologicalSorter.sort(serviceLoadedClassActive, dependencyGraph);
+            int order = 0;
+            for (Class<?> clazz : ordered) {
+                serviceBeensDefinition.add(new ServiceBean(clazz, order++, isAop(clazz)));
+            }
         }
     }
 
@@ -468,7 +544,7 @@ public class DependencyContainerStorage implements DependencyContainer {
         }else{
             final List<CompletableFuture<?>> futures = new ArrayList<>();
             final Set<Class<?>> result = ConcurrentHashMap.newKeySet();
-            try(ExecutorService executorService = Executors.newVirtualThreadPerTaskExecutor()){
+            try{
                 List<Class<?>> classList = new ArrayList<>(loadedSystemClasses);
 
                 for(Class<?> clazz : classList){
@@ -476,7 +552,7 @@ public class DependencyContainerStorage implements DependencyContainer {
                         if(filterConcrete.test(clazz)){
                             result.add(clazz);
                         }
-                    }, executorService));
+                    }, mainVirtualExecutor));
                 }
 
                 CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
@@ -542,24 +618,22 @@ public class DependencyContainerStorage implements DependencyContainer {
     }
 
     private void processDependencyServiceWithExecutorService(Map<Class<?>, Set<Class<?>>> dependencyGraph, Set<Class<?>> serviceLoadedClass) {
-        List<Callable<Void>> tasks = serviceLoadedClass.stream()
-                .filter(clazz -> !clazz.isInterface() && !Modifier.isAbstract(clazz.getModifiers()))
-                .map(clazz -> (Callable<Void>) () -> {
-                    Set<Class<?>> dependencies = getDependecyClassListOfClass(clazz, serviceLoadedClass);
-                    dependencyGraph.put(clazz, dependencies);
-                    return null;
-                })
-                .toList();
+        try{
+            List<CompletableFuture<Void>> futures = new ArrayList<>();
 
-        final int threads = Runtime.getRuntime().availableProcessors();
-        try(ExecutorService executorService = Executors.newFixedThreadPool(threads)){
-            List<Future<Void>> futures = executorService.invokeAll(tasks);
-            for (Future<Void> future : futures) {
-                try {
-                    future.get();
-                } catch (ExecutionException e) {
-                    throw new DependencyContainerRuntimeException("Erro ao processar uma classe", e.getCause());
-                }
+            for(Class<?> serviceClass : serviceLoadedClass){
+                futures.add(CompletableFuture.runAsync(() -> {
+                    if(!serviceClass.isInterface() && !Modifier.isAbstract(serviceClass.getModifiers())){
+                        Set<Class<?>> dependencies = getDependecyClassListOfClass(serviceClass, serviceLoadedClass);
+                        dependencyGraph.put(serviceClass, dependencies);
+                    }
+                }, mainExecutor));
+            }
+
+            try {
+                CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).get();
+            } catch (ExecutionException e) {
+                throw new DependencyContainerRuntimeException("Erro ao processar uma classe", e.getCause());
             }
         }catch (InterruptedException e){
             Thread.currentThread().interrupt();
@@ -571,7 +645,7 @@ public class DependencyContainerStorage implements DependencyContainer {
     private void filterExternalsBeens() throws InvalidClassRegistrationException{
         Set<Class<?>> externalBeen = getConcreteServiceLoadedClass(Configuration.class);
         final Map<Class<?>, Set<Class<?>>> dependencyGraph = new ConcurrentHashMap<>();
-        List<Class<?>> ordered = TopologicalSorter.sort(externalBeen, dependencyGraph);
+        Set<Class<?>> ordered = TopologicalSorter.sort(externalBeen, dependencyGraph);
         for(Class<?> clazz : ordered){
             long count = getDependencyCount(clazz);
 
@@ -757,9 +831,11 @@ public class DependencyContainerStorage implements DependencyContainer {
 
             return chosenConstructor.newInstance(args);
         }catch (Exception e){
+            log.error("Falha ao criar instância de {} com construtor. Tentando fallback sem construtor. Erro: {}", clazz.getName(), e.getMessage(), e);
             try{
                 return createWithOutConstructor(clazz);
-            }catch (Exception ignored){
+            }catch (Exception ex){
+                log.error("Falha ao criar instância de {} até mesmo via fallback. Erro: {}", clazz.getName(), ex.getMessage(), ex);
                 return null;
             }
         }
@@ -827,8 +903,7 @@ public class DependencyContainerStorage implements DependencyContainer {
                     try{
                         return getObjectToInjectVariable(variable, clazzVariable, instance);
                     }catch (Exception e){
-                        String message = "Erro ao definir variavel "+variable.getName()+" ==> cause: "+e.getMessage();
-                        System.out.println(message);
+                        log.error("Erro ao carregar LAZY da variável {}. Causa: {}", variable.getName(), e.getMessage(), e);
                         return null;
                     }
                 };
@@ -836,8 +911,7 @@ public class DependencyContainerStorage implements DependencyContainer {
             }
 
         }catch (Exception e){
-            String message = "Erro ao definir variavel "+variable.getName()+" ==> cause: "+e.getMessage();
-            System.out.println(message);
+            log.error("Erro ao injetar dependência na variável {}. Causa: {}", variable.getName(), e.getMessage(), e);
         }
     }
 
@@ -1145,5 +1219,35 @@ public class DependencyContainerStorage implements DependencyContainer {
 
         return aop;
     }
+
+    private List<Set<Class<?>>> groupByDependencyLayer(
+            Set<Class<?>> serviceLoadedClass,
+            Map<Class<?>, Set<Class<?>>> dependencyGraph) {
+
+        List<Set<Class<?>>> layers = new ArrayList<>();
+        Set<Class<?>> processed = new HashSet<>();
+
+
+        Set<Class<?>> currentLayer = serviceLoadedClass.stream()
+                .filter(c -> dependencyGraph.getOrDefault(c, Set.of()).isEmpty())
+                .collect(Collectors.toSet());
+
+        while (!currentLayer.isEmpty()) {
+            layers.add(currentLayer);
+            processed.addAll(currentLayer);
+
+            currentLayer = serviceLoadedClass.stream()
+                    .filter(c -> !processed.contains(c))
+                    .filter(c -> {
+                        Set<Class<?>> deps = dependencyGraph.getOrDefault(c, Set.of());
+                        return processed.containsAll(deps);
+                    })
+                    .collect(Collectors.toSet());
+        }
+
+        return layers;
+
+    }
+
     
 }

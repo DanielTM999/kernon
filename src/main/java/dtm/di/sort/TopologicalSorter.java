@@ -6,8 +6,8 @@ import java.util.*;
 
 public class TopologicalSorter {
 
-    public static List<Class<?>> sort(Set<Class<?>> classes, Map<Class<?>, Set<Class<?>>> graph) {
-        List<Class<?>> ordered = new ArrayList<>();
+    public static Set<Class<?>> sort(Set<Class<?>> classes, Map<Class<?>, Set<Class<?>>> graph) {
+        Set<Class<?>> ordered = new HashSet<>();
         Set<Class<?>> visited = new HashSet<>();
         Set<Class<?>> visiting = new HashSet<>();
 
@@ -24,7 +24,7 @@ public class TopologicalSorter {
                                       Map<Class<?>, Set<Class<?>>> graph,
                                       Set<Class<?>> visited,
                                       Set<Class<?>> visiting,
-                                      List<Class<?>> ordered) {
+                                      Set<Class<?>> ordered) {
         if (visiting.contains(clazz)) {
             throw new DependencyContainerRuntimeException("Ciclo de dependência detectado em: " + clazz.getName());
         }

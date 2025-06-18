@@ -42,4 +42,5 @@ public interface DependencyContainerConfigurator {
      * Desabilita o suporte a Aspect-Oriented Programming (AOP).
      */
     void disableAOP();
+
 }
