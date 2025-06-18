@@ -1,7 +1,8 @@
 package dtm.di.startup;
 
 import dtm.di.annotations.DependencyContainerFactory;
-import dtm.di.annotations.boot.OnBootFail;
+import dtm.di.annotations.boot.OnApplicationFail;
+import dtm.di.annotations.handler.ExceptionHandler;
 import dtm.di.annotations.schedule.EnableSchedule;
 import dtm.di.annotations.aop.DisableAop;
 import dtm.di.annotations.boot.ApplicationBoot;
@@ -10,13 +11,17 @@ import dtm.di.annotations.boot.OnBoot;
 import dtm.di.annotations.scanner.PackageScanIgnore;
 import dtm.di.annotations.schedule.Schedule;
 import dtm.di.annotations.schedule.ScheduleMethod;
+import dtm.di.common.DefaultStopWatch;
+import dtm.di.common.StopWatch;
 import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
+import dtm.di.core.ExceptionHandlerInvoker;
 import dtm.di.exceptions.InvalidClassRegistrationException;
+import dtm.di.exceptions.NewInstanceException;
 import dtm.di.exceptions.boot.InvalidBootException;
 import dtm.di.storage.StaticContainer;
 import dtm.di.storage.containers.DependencyContainerStorage;
-import dtm.di.storage.containers.DependencyContainerStorageMetrics;
+import dtm.di.storage.handler.ExceptionHandlerInvokerService;
 import dtm.discovery.core.ClassFinderConfigurations;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,6 +29,7 @@ import org.slf4j.LoggerFactory;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.security.InvalidParameterException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
@@ -40,12 +46,22 @@ public class ManagedApplicationStartup {
     private static boolean logEnabled;
     private static boolean aopEnable = true;
     private static ScheduledExecutorService scheduledExecutorService;
+    private static Thread.UncaughtExceptionHandler uncaughtExceptionHandler;
+    private static ExceptionHandlerInvoker handlerInvoker;
 
     public static void doRun(){
         doRun(false);
     }
 
     public static void doRun(boolean log){
+        uncaughtExceptionHandler = Thread.getDefaultUncaughtExceptionHandler();
+        handlerInvoker = new ExceptionHandlerInvoker() {
+            @Override
+            public void invoke(Thread thread, Throwable throwable) throws Exception {
+                uncaughtExceptionHandler.uncaughtException(thread, throwable);
+            }
+        };
+        setExceptionHandler();
         logEnabled = log;
         logInfo("Iniciando doRun()");
         mainClass = getMainClass();
@@ -70,9 +86,10 @@ public class ManagedApplicationStartup {
         getRunMethod();
         logInfo("Método @OnBoot encontrado: {}", runMethod.getName());
         if (throwableMethod != null) {
-            logInfo("Handler para erros identificado no método @OnBootFail: {}.", throwableMethod.getName());
+            logInfo("Handler para erros identificado no método @OnApplicationFail: {}.", throwableMethod.getName());
+            defineExceptionHandler(false);
         } else {
-            logInfo("Nenhum handler para erros (@OnBootFail) foi definido; exceções poderão ser propagadas normalmente.");
+            logInfo("Nenhum handler para erros (@OnApplicationFail) foi definido; exceções poderão ser propagadas normalmente.");
         }
 
         aopEnable = aopIsEnable();
@@ -122,16 +139,19 @@ public class ManagedApplicationStartup {
                         method.getReturnType() == void.class;
 
                 if(isValid) runMethod = method;
-            }else if(method.isAnnotationPresent(OnBootFail.class)){
+            }else if(method.isAnnotationPresent(OnApplicationFail.class)){
                 int mods = method.getModifiers();
                 boolean isValid = Modifier.isStatic(mods) &&
                         Modifier.isPublic(mods) &&
                         method.getReturnType() == void.class;
 
                 Class<?>[] params = method.getParameterTypes();
-                boolean hasThrowableParam = (params.length == 1 && Throwable.class.isAssignableFrom(params[0]));
+                boolean hasValidParams = (params.length == 1 && Throwable.class.isAssignableFrom(params[0]))
+                        || (params.length == 2
+                        && Throwable.class.isAssignableFrom(params[0])
+                        && Thread.class.isAssignableFrom(params[1]));
 
-                if (isValid && hasThrowableParam) throwableMethod = method;
+                if (isValid && hasValidParams) throwableMethod = method;
             }
         }
 
@@ -145,9 +165,8 @@ public class ManagedApplicationStartup {
         DependencyContainerFactory containerFactory = bootableClass.getAnnotation(DependencyContainerFactory.class);
 
         if(containerFactory != null){
-
-
             Class<? extends DependencyContainer> clazz = containerFactory.value();
+            tryLoad(clazz);
             DependencyContainer dependencyContainer = StaticContainer.getDependencyContainer(clazz);
 
             if(dependencyContainer == null){
@@ -166,7 +185,7 @@ public class ManagedApplicationStartup {
         }else{
             DependencyContainerStorage dependencyContainerStorage = DependencyContainerStorage.getInstance(mainClass);
             applyPeckageScan(dependencyContainerStorage.getClassFinderConfigurations());
-
+            logInfo("Container {} obtido com sucesso", DependencyContainer.class);
             return dependencyContainerStorage;
         }
 
@@ -263,7 +282,9 @@ public class ManagedApplicationStartup {
                     Throwable rootCause = getRootCause(ex);
                     exception.set(rootCause);
                     logError("Erro durante carregamento assíncrono: {}", rootCause.getMessage(), rootCause);
+                    return;
                 }
+                defineExceptionHandler(true);
                 invokeHooks(LifecycleHook.Event.AFTER_CONTAINER_LOAD);
                 try {
                     logLifecycle("STARTUP_METHOD", true);
@@ -284,17 +305,7 @@ public class ManagedApplicationStartup {
         logLifecycle("BOOT_COMPLETE", false);
         if (exception.get() != null) {
             Throwable t = exception.get();
-            if(throwableMethod != null){
-                try{
-                    logInfo("Um erro foi detectado durante o processo de boot. Encaminhando a exceção para o manipulador definido em @OnBootFail: {}", throwableMethod.getName());
-                    throwableMethod.invoke(null, t);
-                }catch (Exception e){
-                    logError("Erro ao invocar o método de tratamento de falhas definido por @OnBootFail o erro será propagado");
-                    throw new InvalidBootException("Erro durante boot da aplicação", t);
-                }
-            }else{
-                throw new InvalidBootException("Erro durante boot da aplicação", t);
-            }
+            throw new InvalidBootException("Erro durante boot da aplicação", t);
         }
 
     }
@@ -445,4 +456,88 @@ public class ManagedApplicationStartup {
         }
     }
 
+    private static void tryLoad(Class<? extends DependencyContainer> clazz){
+        try{
+            Method method = clazz.getMethod("loadInstance", Class.class, String[].class);
+            method.invoke(null, mainClass, new String[0]);
+            logInfo("Container {} obtido com sucesso", clazz.getName());
+        }catch (Exception e){
+            logInfo("Nenhum container encontrado para {}, instanciando DependencyContainer padrão", clazz.getName());
+        }
+    }
+
+    private static void setExceptionHandler(){
+        Thread.setDefaultUncaughtExceptionHandler(ManagedApplicationStartup::exceptionHandlerAction);
+    }
+
+    private static void exceptionHandlerAction(Thread thread, Throwable throwable){
+        try{
+            handlerInvoker.invoke(thread, throwable);
+        }catch (Exception e){
+            uncaughtExceptionHandler.uncaughtException(thread, throwable);
+        }
+    }
+
+    private static void defineExceptionHandler(boolean defineByDependencyContainer){
+        if(defineByDependencyContainer){
+            defineDependencyContainerExceptionHandler();
+        }else{
+            defineSimpleExceptionHandler();
+        }
+    }
+
+    private static void defineSimpleExceptionHandler(){
+        if(throwableMethod != null){
+            handlerInvoker = (thread, throwable) -> {
+                try{
+                    Class<?>[] paramsArgs = throwableMethod.getParameterTypes();
+                    Object[] args = new Object[paramsArgs.length];
+
+                    for (int i = 0; i < paramsArgs.length; i++) {
+                        if (Throwable.class.isAssignableFrom(paramsArgs[i])) {
+                            args[i] = throwable;
+                        } else if (Thread.class.isAssignableFrom(paramsArgs[i])) {
+                            args[i] = thread;
+                        } else {
+                            throw new InvalidParameterException("paramtro invalido esperava 'Throwable', 'Thread'");
+                        }
+                    }
+
+                    logInfo("Um erro foi detectado durante o processo da aplicação. Encaminhando a exceção para o manipulador definido em @OnApplicationFail: {}", throwableMethod.getName());
+                    throwableMethod.invoke(null, args);
+                    handlerInvoker.invoke(thread, throwable);
+                }catch (Exception e){
+                    uncaughtExceptionHandler.uncaughtException(thread, throwable);
+                }
+            };
+        }else{
+            handlerInvoker = new ExceptionHandlerInvoker() {
+                @Override
+                public void invoke(Thread thread, Throwable throwable) throws Exception {
+                    uncaughtExceptionHandler.uncaughtException(thread, throwable);
+                }
+            };
+        }
+    }
+
+    private static void defineDependencyContainerExceptionHandler(){
+        if(dependencyContainer == null){
+            defineSimpleExceptionHandler();
+            return;
+        }
+
+        Optional<Class<?>> dependencyContainerExceptionHandlerClassOpt =  dependencyContainer.getLoadedSystemClasses().parallelStream().filter(e -> e.isAnnotationPresent(ExceptionHandler.class)).findFirst();
+
+        if(dependencyContainerExceptionHandlerClassOpt.isEmpty()) {
+            defineSimpleExceptionHandler();
+            return;
+        }
+
+        try{
+            handlerInvoker = new ExceptionHandlerInvokerService(dependencyContainerExceptionHandlerClassOpt.get(), dependencyContainer);
+        }catch (NewInstanceException exception){
+            defineSimpleExceptionHandler();
+        }
+
+    }
 }

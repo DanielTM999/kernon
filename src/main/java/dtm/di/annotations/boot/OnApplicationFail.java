@@ -14,7 +14,7 @@ import java.lang.annotation.Target;
  *
  * <h3>Assinatura esperada do método:</h3>
  * <pre>{@code
- * public static void metodoOnBootFail(Throwable throwable) {
+ * public static void metodoApplicationBoot(Throwable throwable, Thread thread) {
  *     // tratamento da exceção
  * }
  * }</pre>
@@ -23,14 +23,21 @@ import java.lang.annotation.Target;
  * <pre>{@code
  * public class AppErrorHandler {
  *
- *     @OnBootFail
+ *     @OnApplicationFail
  *     public static void handleBootFailure(Throwable error) {
  *         System.err.println("Falha no boot: " + error.getMessage());
  *     }
+ *
+ *     ou
+ *
+ *     @OnApplicationFail
+ *  *     public static void handleBootFailure(Throwable error, Thread thread) {
+ *  *         System.err.println("Falha no boot: " + error.getMessage());
+ *  *     }
  * }
  * }</pre>
  */
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.METHOD)
-public @interface OnBootFail {
+public @interface OnApplicationFail {
 }

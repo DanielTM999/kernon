@@ -88,6 +88,10 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
         return containerStorage;
     }
 
+    public static void loadInstance(Class<?> mainClass, String... profiles){
+        StaticContainer.trySetDependencyContainer(new DependencyContainerStorageMetrics(mainClass, profiles));
+    }
+
 
 
     private DependencyContainerStorageMetrics(Class<?> mainClass, String... profiles){

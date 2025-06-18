@@ -6,6 +6,10 @@ public class InvalidBootException extends RuntimeException {
         super(message);
     }
 
+    public InvalidBootException(Throwable th){
+        super(th);
+    }
+
     public InvalidBootException(String message, Throwable th){
         super(message, th);
     }

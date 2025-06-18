@@ -83,6 +83,11 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         return containerStorage;
     }
 
+    public static void loadInstance(Class<?> mainClass, String... profiles){
+        StaticContainer.trySetDependencyContainer(new DependencyContainerStorage(mainClass, profiles));
+    }
+
+
     private DependencyContainerStorage(Class<?> mainClass, String... profiles){
         this.mainExecutor = Executors.newFixedThreadPool(Math.max(4, Runtime.getRuntime().availableProcessors()));
         this.mainVirtualExecutor = Executors.newVirtualThreadPerTaskExecutor();
