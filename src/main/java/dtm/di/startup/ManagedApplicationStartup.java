@@ -489,6 +489,7 @@ public class ManagedApplicationStartup {
 
     private static void defineSimpleExceptionHandler(){
         if(throwableMethod != null){
+            logInfo("Definindo Exception Handler simples utilizando método anotado com @OnApplicationFail: {}", throwableMethod.getName());
             handlerInvoker = (thread, throwable) -> {
                 try{
                     Class<?>[] paramsArgs = throwableMethod.getParameterTypes();
@@ -508,10 +509,12 @@ public class ManagedApplicationStartup {
                     throwableMethod.invoke(null, args);
                     handlerInvoker.invoke(thread, throwable);
                 }catch (Exception e){
+                    logError("Falha ao executar o handler @OnApplicationFail '{}'. Encaminhando para handler padrão.", throwableMethod.getName(), e);
                     uncaughtExceptionHandler.uncaughtException(thread, throwable);
                 }
             };
         }else{
+            logInfo("Nenhum Exception Handler definido via anotação @OnApplicationFail. Aplicando handler padrão (UncaughtExceptionHandler).");
             handlerInvoker = new ExceptionHandlerInvoker() {
                 @Override
                 public void invoke(Thread thread, Throwable throwable) throws Exception {
@@ -527,16 +530,22 @@ public class ManagedApplicationStartup {
             return;
         }
 
-        Optional<Class<?>> dependencyContainerExceptionHandlerClassOpt =  dependencyContainer.getLoadedSystemClasses().parallelStream().filter(e -> e.isAnnotationPresent(ExceptionHandler.class)).findFirst();
+        Optional<Class<?>> dependencyContainerExceptionHandlerClassOpt =  dependencyContainer.getLoadedSystemClasses()
+                .parallelStream()
+                .filter(e -> e.isAnnotationPresent(ExceptionHandler.class))
+                .findFirst();
 
         if(dependencyContainerExceptionHandlerClassOpt.isEmpty()) {
             defineSimpleExceptionHandler();
             return;
         }
 
+        Class<?> handlerClass = dependencyContainerExceptionHandlerClassOpt.get();
         try{
-            handlerInvoker = new ExceptionHandlerInvokerService(dependencyContainerExceptionHandlerClassOpt.get(), dependencyContainer);
+            logWarn("Delegando Exception handler para [{}]", handlerClass.getName());
+            handlerInvoker = new ExceptionHandlerInvokerService(handlerClass, dependencyContainer);
         }catch (NewInstanceException exception){
+            logError("Falha ao instanciar o Exception Handler [{}]. Usando handler simples.", handlerClass.getName(), exception);
             defineSimpleExceptionHandler();
         }
 
