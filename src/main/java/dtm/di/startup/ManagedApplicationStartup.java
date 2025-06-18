@@ -192,6 +192,7 @@ public class ManagedApplicationStartup {
     }
 
     private static Map<LifecycleHook.Event, List<Method>> getEventMethodMap() {
+        StopWatch sw = new DefaultStopWatch("getEventMethodMap");
         Map<LifecycleHook.Event, Map<Method, Integer>> hookMap = new EnumMap<>(LifecycleHook.Event.class);
 
         for (Method method : bootableClass.getDeclaredMethods()) {
