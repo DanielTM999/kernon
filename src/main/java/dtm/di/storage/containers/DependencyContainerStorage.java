@@ -2,6 +2,8 @@ package dtm.di.storage.containers;
 
 import dtm.di.annotations.*;
 import dtm.di.annotations.aop.DisableAop;
+import dtm.di.common.DefaultStopWatch;
+import dtm.di.common.StopWatch;
 import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
 import dtm.di.exceptions.*;
@@ -23,7 +25,6 @@ import lombok.Getter;
 import lombok.NonNull;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
-
 import java.io.File;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.*;
@@ -33,6 +34,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+
+import static dtm.di.common.AnotationsUtils.hasMetaAnnotation;
+import static dtm.di.common.AnotationsUtils.getAllFieldWithAnnotation;
 
 @Slf4j
 @SuppressWarnings("unchecked")
@@ -209,6 +213,34 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     @Override
+    public <T, S extends T> Map<Class<S>, S> getInstancesByClass(Class<T> assignableClass) {
+        Map<Class<S>, S> classSMap = new ConcurrentHashMap<>();
+
+        for(Map.Entry<Class<?>, List<Dependency>> entry : dependencyContainer.entrySet()){
+            final Class<?> refClass = entry.getKey();
+            final List<Dependency> dependencyList = entry.getValue();
+
+            if (assignableClass.isAssignableFrom(refClass)) {
+                for (Dependency dependency : dependencyList) {
+                    try {
+                        Object instance = dependency.getDependency();
+                        if (instance != null) {
+                            classSMap.computeIfAbsent((Class<S>) refClass, k -> (S) instance);
+                        }
+                    } catch (ClassCastException cce) {
+                        log.error("Erro ao fazer cast da instância da classe '{}': {}", refClass.getName(), cce.getMessage(), cce);
+                    } catch (Exception e) {
+                        log.error("Erro inesperado ao obter instância da classe '{}': {}", refClass.getName(), e.getMessage(), e);
+                    }
+                }
+            }
+
+        }
+
+        return classSMap;
+    }
+
+    @Override
     public <T> T newInstance(Class<T> referenceClass) throws NewInstanceException {
         throwIfUnload();
         try{
@@ -235,11 +267,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
         final Class<?> clazz = instance.getClass();
 
-        List<Field> listOfRegistration = Arrays.stream(clazz.getDeclaredFields())
-                .filter(f -> {
-                    return f.isAnnotationPresent(Inject.class);
-                })
-                .toList();
+        List<Field> listOfRegistration = getAllFieldWithAnnotation(clazz, Inject.class);
 
         if(parallelInjection){
             final List<CompletableFuture<?>> tasks = new ArrayList<>();
@@ -1063,17 +1091,14 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         try{
             if(executeProxy(realInstance)) return ProxyFactory.newProxyObject(realInstance, clazz, this);
         }catch (Exception e){
-            System.out.println("Erro ao criar o proxy: "+e.getMessage()+" usando o objeto real.");
+            log.error("Erro ao criar o proxy para a classe {}: {}", clazz.getName(), e.getMessage(), e);
         }
 
         return realInstance;
     }
 
     private boolean executeProxy(Object instance){
-        if (instance instanceof DependencyContainer) {
-            return false;
-        }
-        return true;
+        return instance instanceof DependencyContainer;
     }
 
     private void loadSystemClasses(){
@@ -1105,55 +1130,6 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private boolean isConcreteClass(Class<?> clazz){
         return !clazz.isInterface() && !Modifier.isAbstract(clazz.getModifiers()) && !clazz.isEnum() && !clazz.isRecord();
-    }
-
-    private boolean hasMetaAnnotation(Class<?> targetClass, Class<? extends Annotation> baseAnnotation){
-        if(targetClass.isAnnotationPresent(baseAnnotation)){
-            return true;
-        }
-        Set<Class<? extends Annotation>> visiting = new HashSet<>();
-        for (Annotation annotation : targetClass.getAnnotations()) {
-            if (hasMetaAnnotation(annotation.annotationType(), baseAnnotation, visiting)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean hasMetaAnnotation(Method targetMethod, Class<? extends Annotation> baseAnnotation){
-        if(targetMethod.isAnnotationPresent(baseAnnotation)){
-            return true;
-        }
-        Set<Class<? extends Annotation>> visiting = new HashSet<>();
-        for (Annotation annotation : targetMethod.getAnnotations()) {
-            if (hasMetaAnnotation(annotation.annotationType(), baseAnnotation, visiting)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private boolean hasMetaAnnotation(Class<? extends Annotation> annotationType, Class<? extends Annotation> baseAnnotation, Set<Class<? extends Annotation>> visiting){
-        if (annotationType.equals(baseAnnotation)) {
-            return true;
-        }
-//        if (metaAnnotationCache.containsKey(annotationType)) {
-//            return metaAnnotationCache.get(annotationType);
-//        }
-        if (!visiting.add(annotationType)) {
-            return false;
-        }
-
-        for (Annotation metaAnnotation : annotationType.getAnnotations()) {
-            if (hasMetaAnnotation(metaAnnotation.annotationType(), baseAnnotation, visiting)) {
-                visiting.remove(annotationType);
-                //metaAnnotationCache.put(annotationType, true);
-                return true;
-            }
-        }
-        visiting.remove(annotationType);
-        //metaAnnotationCache.put(annotationType, false);
-        return false;
     }
 
     private Object[] tryResolveConstructorArgs(Parameter[] parameters, Object[] extraArgs, List<Parameter> failedParams) {
@@ -1259,6 +1235,4 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         return layers;
 
     }
-
-    
 }

@@ -4,6 +4,7 @@ import dtm.di.exceptions.NewInstanceException;
 import dtm.di.prototypes.Dependency;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -31,6 +32,20 @@ public interface DependencyContainerGetter {
      */
     <T> T getDependency(Class<T> reference, String qualifier);
 
+    /**
+     * Retorna um mapa contendo todas as instâncias gerenciadas cujo tipo é atribuível a partir do tipo fornecido.
+     *
+     * <p>Este método busca todas as instâncias que são do tipo especificado ou de subtipos dele,
+     * e as retorna mapeadas pela sua classe concreta.</p>
+     *
+     * @param <T>             Tipo base para busca das instâncias.
+     * @param <S>             Tipo concreto da instância, que deve estender ou implementar T.
+     * @param assignableClass Classe base usada como filtro para as instâncias a serem retornadas.
+     * @return Mapa com as classes concretas como chave e as instâncias correspondentes como valor.
+     *         O mapa estará vazio se nenhuma instância compatível for encontrada.
+     * @throws IllegalArgumentException Se o parâmetro {@code assignableClass} for {@code null}.
+     */
+    <T, S extends T> Map<Class<S>, S> getInstancesByClass(Class<T> assignableClass);
 
     /**
      * Cria uma nova instância da classe especificada, injetando as dependências automaticamente.

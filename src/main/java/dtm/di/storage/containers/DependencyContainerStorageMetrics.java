@@ -25,6 +25,8 @@ import dtm.discovery.finder.ClassFinderService;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.Setter;
+import lombok.extern.slf4j.Slf4j;
+
 import java.io.File;
 import java.io.PrintStream;
 import java.lang.annotation.Annotation;
@@ -41,6 +43,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 @SuppressWarnings("unchecked")
+@Slf4j
 public class DependencyContainerStorageMetrics implements DependencyContainer, ClassFinderDependencyContainer {
     private final StopWatch stopWatch;
     private final ExecutorService mainExecutor;
@@ -239,6 +242,35 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
             return null;
         }
     }
+
+    @Override
+    public <T, S extends T> Map<Class<S>, S> getInstancesByClass(Class<T> assignableClass) {
+        Map<Class<S>, S> classSMap = new ConcurrentHashMap<>();
+
+        for(Map.Entry<Class<?>, List<Dependency>> entry : dependencyContainer.entrySet()){
+            final Class<?> refClass = entry.getKey();
+            final List<Dependency> dependencyList = entry.getValue();
+
+            if (assignableClass.isAssignableFrom(refClass)) {
+                for (Dependency dependency : dependencyList) {
+                    try {
+                        Object instance = dependency.getDependency();
+                        if (instance != null) {
+                            classSMap.computeIfAbsent((Class<S>) refClass, k -> (S) instance);
+                        }
+                    } catch (ClassCastException cce) {
+                        log.error("Erro ao fazer cast da instância da classe '{}': {}", refClass.getName(), cce.getMessage(), cce);
+                    } catch (Exception e) {
+                        log.error("Erro inesperado ao obter instância da classe '{}': {}", refClass.getName(), e.getMessage(), e);
+                    }
+                }
+            }
+
+        }
+
+        return classSMap;
+    }
+
 
     @Override
     public <T> T newInstance(Class<T> referenceClass) throws NewInstanceException {
