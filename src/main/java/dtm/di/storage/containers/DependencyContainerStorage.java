@@ -858,15 +858,11 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private Object createWithConstructor(@NonNull Class<?> clazz, @NonNull Constructor<?>[] constructors){
         try{
-            Constructor<?> chosenConstructor = Arrays.stream(constructors)
-                    .max(Comparator.comparingInt(Constructor::getParameterCount))
-                    .orElseThrow(() -> new Exception("Nenhum construtor encontrado para " + clazz.getName()));
-        
+            Constructor<?> chosenConstructor = getSelectedConstructor(constructors, clazz);
             Parameter[] parameters = chosenConstructor.getParameters();
             Object[] args = Arrays.stream(parameters)
                     .map(this::getDependecyObjectByParam)
                     .toArray();
-
 
             return chosenConstructor.newInstance(args);
         }catch (Exception e){
@@ -1172,18 +1168,13 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         return args;
     }
 
-    private Constructor<?> selectContruct(Constructor<?>[] contructors, Class<?> clazz){
-        for (Constructor<?> constructor : contructors){
-            boolean allMatch = true;
-            for (Class<?> paramType : constructor.getParameterTypes()){
-                if (!dependencyContainer.containsKey(paramType)) {
-                    allMatch = false;
-                    break;
-                }
-            }
-            if(allMatch) return constructor;
-        }
-        throw new NewInstanceException("construtor não encontrado para: "+clazz, clazz);
+    private Constructor<?> getSelectedConstructor(Constructor<?>[] constructors, Class<?> clazz){
+        if(constructors == null || constructors.length == 0) throw new NewInstanceException("construtor não encontrado para: "+clazz, clazz);
+
+        return Arrays.stream(constructors)
+                .filter(c -> c.isAnnotationPresent(MainConstructor.class))
+                .findFirst()
+                .orElse(constructors[0]);
     }
 
     private <T> T newInstance(Class<T> referenceClass, boolean aop) throws NewInstanceException {

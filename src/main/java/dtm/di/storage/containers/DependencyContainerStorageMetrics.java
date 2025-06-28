@@ -949,10 +949,7 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
 
     private Object createWithConstructor(@NonNull Class<?> clazz, @NonNull Constructor<?>[] constructors){
         try{
-            Constructor<?> chosenConstructor = Arrays.stream(constructors)
-                    .max(Comparator.comparingInt(Constructor::getParameterCount))
-                    .orElseThrow(() -> new Exception("Nenhum construtor encontrado para " + clazz.getName()));
-        
+            Constructor<?> chosenConstructor = getSelectedConstructor(constructors, clazz);
             Parameter[] parameters = chosenConstructor.getParameters();
             Object[] args = Arrays.stream(parameters)
                     .map(this::getDependecyObjectByParam)
@@ -1260,9 +1257,6 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
         if (annotationType.equals(baseAnnotation)) {
             return true;
         }
-//        if (metaAnnotationCache.containsKey(annotationType)) {
-//            return metaAnnotationCache.get(annotationType);
-//        }
         if (!visiting.add(annotationType)) {
             return false;
         }
@@ -1270,12 +1264,10 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
         for (Annotation metaAnnotation : annotationType.getAnnotations()) {
             if (hasMetaAnnotation(metaAnnotation.annotationType(), baseAnnotation, visiting)) {
                 visiting.remove(annotationType);
-                //metaAnnotationCache.put(annotationType, true);
                 return true;
             }
         }
         visiting.remove(annotationType);
-        //metaAnnotationCache.put(annotationType, false);
         return false;
     }
 
@@ -1395,6 +1387,15 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
         }catch (Exception e){
             return System.out;
         }
+    }
+
+    private Constructor<?> getSelectedConstructor(Constructor<?>[] constructors, Class<?> clazz){
+        if(constructors == null || constructors.length == 0) throw new NewInstanceException("construtor não encontrado para: "+clazz, clazz);
+
+        return Arrays.stream(constructors)
+                .filter(c -> c.isAnnotationPresent(MainConstructor.class))
+                .findFirst()
+                .orElse(constructors[0]);
     }
 
 
