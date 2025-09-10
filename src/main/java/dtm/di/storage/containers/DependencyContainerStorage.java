@@ -38,6 +38,7 @@ import java.util.stream.Collectors;
 import static dtm.di.common.AnotationsUtils.hasMetaAnnotation;
 import static dtm.di.common.AnotationsUtils.getAllFieldWithAnnotation;
 
+@DisableAop
 @Slf4j
 @SuppressWarnings("unchecked")
 public class DependencyContainerStorage implements DependencyContainer, ClassFinderDependencyContainer {
@@ -1094,7 +1095,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private boolean executeProxy(Object instance){
-        return instance instanceof DependencyContainer;
+        if(instance == null) return false;
+        return !instance.getClass().isAnnotationPresent(DisableAop.class);
     }
 
     private void loadSystemClasses(){
@@ -1194,7 +1196,6 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private boolean isAop(Method method){
         if(method.isAnnotationPresent(DisableAop.class)) return false;
-
         return aop;
     }
 

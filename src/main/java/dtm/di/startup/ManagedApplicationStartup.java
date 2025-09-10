@@ -54,13 +54,7 @@ public class ManagedApplicationStartup {
     }
 
     public static void doRun(boolean log){
-        uncaughtExceptionHandler = Thread.getDefaultUncaughtExceptionHandler();
-        handlerInvoker = new ExceptionHandlerInvoker() {
-            @Override
-            public void invoke(Thread thread, Throwable throwable) throws Exception {
-                uncaughtExceptionHandler.uncaughtException(thread, throwable);
-            }
-        };
+        handlerInvoker = getDefaultExceptionHandlerInvoker();
         setExceptionHandler();
         logEnabled = log;
         logInfo("Iniciando doRun()");
@@ -475,7 +469,7 @@ public class ManagedApplicationStartup {
         try{
             handlerInvoker.invoke(thread, throwable);
         }catch (Exception e){
-            uncaughtExceptionHandler.uncaughtException(thread, throwable);
+            logger.error("", throwable);
         }
     }
 
@@ -549,5 +543,20 @@ public class ManagedApplicationStartup {
             defineSimpleExceptionHandler();
         }
 
+    }
+
+    private static ExceptionHandlerInvoker getDefaultExceptionHandlerInvoker(){
+        return new ExceptionHandlerInvoker() {
+            @Override
+            public void invoke(Thread thread, Throwable throwable) throws Exception {
+
+                if(uncaughtExceptionHandler != null){
+                    uncaughtExceptionHandler.uncaughtException(thread, throwable);
+                    return;
+                }
+
+                logger.error("Exceção não tratada na thread {}: ", thread.getName(), throwable);
+            }
+        };
     }
 }
