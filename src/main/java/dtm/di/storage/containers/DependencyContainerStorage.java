@@ -2,8 +2,6 @@ package dtm.di.storage.containers;
 
 import dtm.di.annotations.*;
 import dtm.di.annotations.aop.DisableAop;
-import dtm.di.common.DefaultStopWatch;
-import dtm.di.common.StopWatch;
 import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
 import dtm.di.exceptions.*;
@@ -800,7 +798,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             }
             instance = (instance == null) ? createWithConstructor(clazz, constructors) : instance;
             injectDependencies(Objects.requireNonNull(instance));
-            return (aop) ? proxyObject(instance, clazz) : instance;
+            Object object =  (aop) ? proxyObject(instance, clazz) : instance;
+            executePostCreationMethod(clazz, object);
+            return object;
         }catch (Exception e) {
             String message = "Erro ao criar Objeto "+clazz+" ==> cause: "+e.getMessage();
             throw new NewInstanceException(message, clazz);
@@ -854,7 +854,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
 
     private Object createWithOutConstructor(@NonNull Class<?> clazz) throws Exception{
-        return clazz.getDeclaredConstructor().newInstance();
+        Object instance = clazz.getDeclaredConstructor().newInstance();
+        executePostCreationMethod(clazz, instance);
+        return instance;
     }
 
     private Object createWithConstructor(@NonNull Class<?> clazz, @NonNull Constructor<?>[] constructors){
@@ -1128,6 +1130,80 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private boolean isConcreteClass(Class<?> clazz){
         return !clazz.isInterface() && !Modifier.isAbstract(clazz.getModifiers()) && !clazz.isEnum() && !clazz.isRecord();
+    }
+    
+    private void executePostCreationMethod(Class<?> clazz, Object instance){
+        List<Method> postCreationMethods = getPostCreationMethod(clazz);
+
+        for(Method method: postCreationMethods){
+            try{
+                invokeMethod(method, instance);
+            }catch (Exception e){
+                log.error("Erro ao executar metodo: {} do PostCreation", method.getName());
+            }
+        }
+
+    }
+
+    private List<Method> getPostCreationMethod(Class<?> clazz){
+        List<Method> postCreationMethods = new ArrayList<>();
+        Class<?> clazzRoot = clazz;
+        while(clazzRoot != null){
+            postCreationMethods.addAll(
+                    Arrays.stream(clazzRoot.getDeclaredMethods())
+                            .filter(c -> c.isAnnotationPresent(PostCreation.class))
+                            .toList()
+            );
+            clazzRoot = clazzRoot.getSuperclass();
+        }
+
+        postCreationMethods.sort(Comparator.comparingInt(
+                m -> m.getAnnotation(PostCreation.class).order()
+        ));
+
+        return postCreationMethods;
+    }
+
+    private void invokeMethod(Method method, Object instance) throws Exception{
+        int paramCount = method.getParameterCount();
+
+        if(paramCount > 0){
+            invokeMethodNoArgs(method, instance);
+            return;
+        }
+
+        invokeMethodWithArgs(method, instance, paramCount);
+    }
+
+    private void invokeMethodWithArgs(Method method, Object instance, int paramCount) throws Exception{
+        Parameter[] paramTypeList = method.getParameters();
+        CompletableFuture<?>[] futures = new CompletableFuture[paramCount];
+
+        for (int i = 0; i < paramCount; i++) {
+            final int index = i;
+            Parameter parameter = paramTypeList[i];
+            String qualifier = getQualifierName(parameter);
+
+            futures[i] = CompletableFuture.supplyAsync(() ->
+                    getDependency(parameter.getType(), qualifier)
+            ).thenApply(dep -> {
+                return dep;
+            });
+        }
+
+        CompletableFuture<Void> allDone = CompletableFuture.allOf(futures);
+        Object[] args = allDone.thenApply(v ->
+                Arrays.stream(futures)
+                        .map(CompletableFuture::join)
+                        .toArray()
+        ).join();
+
+
+        method.invoke(instance, args);
+    }
+
+    private void invokeMethodNoArgs(Method method, Object instance) throws Exception{
+        method.invoke(instance);
     }
 
     private Object[] tryResolveConstructorArgs(Parameter[] parameters, Object[] extraArgs, List<Parameter> failedParams) {
