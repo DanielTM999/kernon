@@ -890,7 +890,11 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
             }
             instance = (instance == null) ? createWithConstructor(clazz, constructors) : instance;
             injectDependencies(Objects.requireNonNull(instance));
-            return (aop) ? proxyObject(instance, clazz) : instance;
+            Object object = (aop) ? proxyObject(instance, clazz) : instance;
+            stopWatch.lap("executePostCreationMethod: "+clazz);
+            executePostCreationMethod(clazz, object);
+            stopWatch.lap("End executePostCreationMethod: "+clazz);
+            return object;
         }catch (Exception e) {
             String message = "Erro ao criar Objeto "+clazz+" ==> cause: "+e.getMessage();
             throw new NewInstanceException(message, clazz);
@@ -909,7 +913,11 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
                     constructor.setAccessible(true);
                     Object instance = constructor.newInstance(resolvedArgs);
                     injectDependencies(instance);
-                    return (aop) ? proxyObject(instance, clazz) : instance;
+                    Object object = (aop) ? proxyObject(instance, clazz) : instance;
+                    stopWatch.lap("executePostCreationMethod: "+clazz);
+                    executePostCreationMethod(clazz, object);
+                    stopWatch.lap("End executePostCreationMethod: "+clazz);
+                    return object;
                 }
             }
 
@@ -944,7 +952,10 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
 
 
     private Object createWithOutConstructor(@NonNull Class<?> clazz) throws Exception{
-        return clazz.getDeclaredConstructor().newInstance();
+        stopWatch.lap("newInstance: "+clazz);
+        Object instance = clazz.getDeclaredConstructor().newInstance();
+        stopWatch.lap("End newInstance: "+clazz);
+        return instance;
     }
 
     private Object createWithConstructor(@NonNull Class<?> clazz, @NonNull Constructor<?>[] constructors){
@@ -1397,6 +1408,85 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
                 .findFirst()
                 .orElse(constructors[0]);
     }
+
+    private void executePostCreationMethod(Class<?> clazz, Object instance){
+        stopWatch.lap("getPostCreationMethods: "+clazz);
+        List<Method> postCreationMethods = getPostCreationMethod(clazz);
+        stopWatch.lap("End getPostCreationMethods: "+clazz);
+
+        for(Method method: postCreationMethods){
+            try{
+                stopWatch.lap("invokePostCreationMethods: "+method + " : "+clazz);
+                invokeMethod(method, instance);
+                stopWatch.lap("End invokePostCreationMethods: "+method + " : "+clazz);;
+            }catch (Exception e){
+                log.error("Erro ao executar metodo: {} do PostCreation", method.getName());
+            }
+        }
+
+    }
+
+    private List<Method> getPostCreationMethod(Class<?> clazz){
+        List<Method> postCreationMethods = new ArrayList<>();
+        Class<?> clazzRoot = clazz;
+        while(clazzRoot != null){
+            postCreationMethods.addAll(
+                    Arrays.stream(clazzRoot.getDeclaredMethods())
+                            .filter(c -> c.isAnnotationPresent(PostCreation.class))
+                            .toList()
+            );
+            clazzRoot = clazzRoot.getSuperclass();
+        }
+
+        postCreationMethods.sort(Comparator.comparingInt(
+                m -> m.getAnnotation(PostCreation.class).order()
+        ));
+
+        return postCreationMethods;
+    }
+
+    private void invokeMethod(Method method, Object instance) throws Exception{
+        int paramCount = method.getParameterCount();
+
+        if(paramCount > 0){
+            invokeMethodNoArgs(method, instance);
+            return;
+        }
+
+        invokeMethodWithArgs(method, instance, paramCount);
+    }
+
+    private void invokeMethodWithArgs(Method method, Object instance, int paramCount) throws Exception{
+        Parameter[] paramTypeList = method.getParameters();
+        CompletableFuture<?>[] futures = new CompletableFuture[paramCount];
+
+        for (int i = 0; i < paramCount; i++) {
+            final int index = i;
+            Parameter parameter = paramTypeList[i];
+            String qualifier = getQualifierName(parameter);
+
+            futures[i] = CompletableFuture.supplyAsync(() ->
+                    getDependency(parameter.getType(), qualifier)
+            ).thenApply(dep -> {
+                return dep;
+            });
+        }
+
+        CompletableFuture<Void> allDone = CompletableFuture.allOf(futures);
+        Object[] args = allDone.thenApply(v ->
+                Arrays.stream(futures)
+                        .map(CompletableFuture::join)
+                        .toArray()
+        ).join();
+
+
+        method.invoke(instance, args);
+    }
+
+    private void invokeMethodNoArgs(Method method, Object instance) throws Exception{
+        method.invoke(instance);
+    }
+
 
 
 }

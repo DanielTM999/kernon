@@ -819,7 +819,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     constructor.setAccessible(true);
                     Object instance = constructor.newInstance(resolvedArgs);
                     injectDependencies(instance);
-                    return (aop) ? proxyObject(instance, clazz) : instance;
+                    Object object =  (aop) ? proxyObject(instance, clazz) : instance;
+                    executePostCreationMethod(clazz, object);
+                    return object;
                 }
             }
 
@@ -854,9 +856,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
 
     private Object createWithOutConstructor(@NonNull Class<?> clazz) throws Exception{
-        Object instance = clazz.getDeclaredConstructor().newInstance();
-        executePostCreationMethod(clazz, instance);
-        return instance;
+        return clazz.getDeclaredConstructor().newInstance();
     }
 
     private Object createWithConstructor(@NonNull Class<?> clazz, @NonNull Constructor<?>[] constructors){
