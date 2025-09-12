@@ -604,7 +604,7 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
     private String getQualifierName(@NonNull Class<?> clazz){
         if(clazz.isAnnotationPresent(Qualifier.class)){
             Qualifier qualifierAnnotation = clazz.getAnnotation(Qualifier.class);
-            return (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
+            return (qualifierAnnotation.value() == null || qualifierAnnotation.value().isEmpty()) ? "default" : qualifierAnnotation.value();
         } else {
             return  "default";
         }
@@ -613,7 +613,7 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
     private String getQualifierName(@NonNull Field variable){
         if(variable.isAnnotationPresent(Qualifier.class)){
             Qualifier qualifierAnnotation = variable.getAnnotation(Qualifier.class);
-            return (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
+            return (qualifierAnnotation.value() == null || qualifierAnnotation.value().isEmpty()) ? "default" : qualifierAnnotation.value();
         } else if(variable.isAnnotationPresent(Inject.class)) {
             Inject inject = variable.getAnnotation(Inject.class);
             return (inject.qualifier() == null || inject.qualifier().isEmpty()) ? "default" : inject.qualifier();
@@ -625,7 +625,7 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
     private String getQualifierName(@NonNull Parameter variable){
         if(variable.isAnnotationPresent(Qualifier.class)){
             Qualifier qualifierAnnotation = variable.getAnnotation(Qualifier.class);
-            return (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
+            return (qualifierAnnotation.value() == null || qualifierAnnotation.value().isEmpty()) ? "default" : qualifierAnnotation.value();
         } else {
             return  "default";
         }
@@ -640,7 +640,7 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
             return (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
         } else if(beenMethod.isAnnotationPresent(Qualifier.class)){
             Qualifier qualifierAnnotation = beenMethod.getAnnotation(Qualifier.class);
-            return (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
+            return (qualifierAnnotation.value() == null || qualifierAnnotation.value().isEmpty()) ? "default" : qualifierAnnotation.value();
         }
         return  "default";
     }
