@@ -1,5 +1,6 @@
 package dtm.di.startup;
 
+import dtm.di.annotations.ControllerAdvice;
 import dtm.di.annotations.DependencyContainerFactory;
 import dtm.di.annotations.boot.OnApplicationFail;
 import dtm.di.annotations.handler.ExceptionHandler;
@@ -19,8 +20,10 @@ import dtm.di.core.ExceptionHandlerInvoker;
 import dtm.di.exceptions.InvalidClassRegistrationException;
 import dtm.di.exceptions.NewInstanceException;
 import dtm.di.exceptions.boot.InvalidBootException;
+import dtm.di.prototypes.Dependency;
 import dtm.di.storage.StaticContainer;
 import dtm.di.storage.containers.DependencyContainerStorage;
+import dtm.di.storage.handler.ControllerAdviceHandlerInvokeService;
 import dtm.di.storage.handler.ExceptionHandlerInvokerService;
 import dtm.discovery.core.ClassFinderConfigurations;
 import org.slf4j.Logger;
@@ -32,6 +35,7 @@ import java.lang.reflect.Modifier;
 import java.security.InvalidParameterException;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
@@ -48,6 +52,10 @@ public class ManagedApplicationStartup {
     private static ScheduledExecutorService scheduledExecutorService;
     private static Thread.UncaughtExceptionHandler uncaughtExceptionHandler;
     private static ExceptionHandlerInvoker handlerInvoker;
+    private final static AtomicReference<ExceptionHandlerInvoker> userControllerAdvice = new AtomicReference<>();
+    private static Future<Void> controllerAdviceScanner;
+    private final static AtomicBoolean controllerAdviceScannerIsLoad = new AtomicBoolean(false);
+
 
     public static void doRun(){
         doRun(false);
@@ -267,6 +275,7 @@ public class ManagedApplicationStartup {
                     dependencyContainer.enableParallelInjection();
                     if(aopEnable) dependencyContainer.enableAOP();
                     dependencyContainer.load();
+                    defineControllerAdviceAsync();
                     logLifecycle("CONTAINER_LOAD", false);
                 } catch (InvalidClassRegistrationException e) {
                     logError("Erro ao carregar DependencyContainer: {}", e.getMessage(), e);
@@ -467,9 +476,23 @@ public class ManagedApplicationStartup {
 
     private static void exceptionHandlerAction(Thread thread, Throwable throwable){
         try{
-            handlerInvoker.invoke(thread, throwable);
-        }catch (Exception e){
-            logger.error("", throwable);
+            completeLoadControllerAdvice();
+            final ExceptionHandlerInvoker userExceptionHandlerInvoker = userControllerAdvice.get();
+            if(userExceptionHandlerInvoker != null){
+                userExceptionHandlerInvoker.invoke(thread, throwable);
+            }else{
+                try{
+                    handlerInvoker.invoke(thread, throwable);
+                }catch (Exception e){
+                    logger.error("", throwable);
+                }
+            }
+        } catch (Exception ignored) {
+            try{
+                handlerInvoker.invoke(thread, throwable);
+            }catch (Exception e){
+                logger.error("", throwable);
+            }
         }
     }
 
@@ -558,5 +581,54 @@ public class ManagedApplicationStartup {
                 logger.error("Exceção não tratada na thread {}: ", thread.getName(), throwable);
             }
         };
+    }
+
+
+    private static void defineControllerAdviceAsync(){
+        ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable);
+            thread.setName("ControllerAdviceScannerThread");
+            return thread;
+        });
+        try(executor){
+            controllerAdviceScanner = CompletableFuture.runAsync(() -> {
+                try {
+                    logInfo("Iniciando varredura de classes para localizar @ControllerAdvice...");
+
+                    Class<?> classOfControllerAdvice = null;
+                    for (Class<?> classOfService : dependencyContainer.getLoadedSystemClasses()) {
+                        if (classOfService.isAnnotationPresent(ControllerAdvice.class)) {
+                            classOfControllerAdvice = classOfService;
+                            break;
+                        }
+                    }
+
+                    if (classOfControllerAdvice != null) {
+                        logInfo("ControllerAdvice encontrado: " + classOfControllerAdvice.getName());
+
+                        Object controllerAdviceInstance = dependencyContainer.newInstance(classOfControllerAdvice);
+                        if(controllerAdviceInstance != null){
+                            userControllerAdvice.set(new ControllerAdviceHandlerInvokeService(controllerAdviceInstance, handlerInvoker));
+                        }
+                    } else {
+                        logWarn("Nenhuma classe anotada com @ControllerAdvice foi encontrada.");
+                    }
+                } catch (Exception e) {
+                    logError("Erro inesperado durante a varredura de ControllerAdvice", e);
+                }
+            }, executor);
+        } catch (Exception e) {
+            logError("Erro ao definir Controller Advice", e);
+        }
+    }
+
+    private static void completeLoadControllerAdvice(){
+        try{
+            if(controllerAdviceScannerIsLoad.compareAndSet(false, true)){
+                controllerAdviceScanner.get();
+            }
+        }catch (Exception e){
+            logError("Erro ao carregar ControllerAdvice", e);
+        }
     }
 }
