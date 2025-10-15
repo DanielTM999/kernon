@@ -104,7 +104,7 @@ public class ClassFinderConfigurationsStorage implements ClassFinderConfiguratio
     }
 
     @Override
-    public ClassFinderErrorHandler getHandler() {
+    public ClassFinderErrorHandler getErrorHandler() {
         return handler;
     }
 
