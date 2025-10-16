@@ -1,6 +1,7 @@
 package dtm.di.storage.containers;
 
 import dtm.di.annotations.*;
+import dtm.di.annotations.aop.Aspect;
 import dtm.di.annotations.aop.DisableAop;
 import dtm.di.annotations.metrics.PrintStremFile;
 import dtm.di.common.ConcurrentStopWatch;
@@ -1332,7 +1333,7 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
     }
 
     private boolean isAop(Class<?> clazz){
-        if(clazz.isAnnotationPresent(DisableAop.class)) return false;
+        if(clazz.isAnnotationPresent(DisableAop.class) || clazz.isAnnotationPresent(Aspect.class)) return false;
 
         return aop;
     }

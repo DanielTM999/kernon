@@ -1,6 +1,7 @@
 package dtm.di.storage.containers;
 
 import dtm.di.annotations.*;
+import dtm.di.annotations.aop.Aspect;
 import dtm.di.annotations.aop.DisableAop;
 import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
@@ -1265,7 +1266,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private boolean isAop(Class<?> clazz){
-        if(clazz.isAnnotationPresent(DisableAop.class)) return false;
+        if(clazz.isAnnotationPresent(DisableAop.class) || clazz.isAnnotationPresent(Aspect.class)) return false;
 
         return aop;
     }

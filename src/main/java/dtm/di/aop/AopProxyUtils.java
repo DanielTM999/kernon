@@ -240,15 +240,11 @@ public class AopProxyUtils extends AopUtils {
             Parameter parameter = parameters[i];
             Class<?> paramType = parameter.getType();
 
-            boolean isProxy = parameter.isAnnotationPresent(ProxyInstance.class);
-            boolean isResult = parameter.isAnnotationPresent(ResultProxy.class);
-            boolean isRealInstance = parameter.isAnnotationPresent(ReferenceIntance.class);
-
-            if (isProxy) {
+            if (parameter.isAnnotationPresent(ProxyInstance.class)) {
                 invokeArgs[i] = proxy;
-            } else if (isResult) {
+            } else if (parameter.isAnnotationPresent(ResultProxy.class)) {
                 invokeArgs[i] = currentResult;
-            } else if (isRealInstance) {
+            } else if (parameter.isAnnotationPresent(ReferenceIntance.class)) {
                 invokeArgs[i] = realInstance;
             } else if (Method.class.isAssignableFrom(paramType)) {
                 invokeArgs[i] = methodArgs;
