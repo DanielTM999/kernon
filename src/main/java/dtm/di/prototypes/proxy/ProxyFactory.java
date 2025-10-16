@@ -1,9 +1,12 @@
 package dtm.di.prototypes.proxy;
 
+import dtm.di.annotations.aop.ProxyInstance;
 import dtm.di.core.DependencyContainer;
 import lombok.NonNull;
 import net.bytebuddy.ByteBuddy;
+import net.bytebuddy.description.annotation.AnnotationDescription;
 import net.bytebuddy.dynamic.DynamicType;
+import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
 import net.bytebuddy.implementation.MethodDelegation;
 import net.bytebuddy.matcher.ElementMatchers;
 
@@ -40,15 +43,19 @@ public class ProxyFactory {
 
 
         Class<?> proxyClass = proxyCache.computeIfAbsent(clazz, cls -> {
+            AnnotationDescription proxyAnnotation = AnnotationDescription.Builder
+                    .ofType(ProxyInstance.class)
+                    .build();
             try (DynamicType.Unloaded<?> unloaded = new ByteBuddy()
                     .subclass(cls)
                     .defineField(interceptorFieldName, ObjectInterceptor.class)
                     .method(ElementMatchers.isDeclaredBy(cls))
                     .intercept(MethodDelegation.toField(interceptorFieldName))
+                    .annotateType(proxyAnnotation)
                     .make()) {
 
                 return unloaded
-                        .load(cls.getClassLoader())
+                        .load(cls.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
                         .getLoaded();
 
             } catch (Exception e) {

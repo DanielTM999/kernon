@@ -38,6 +38,6 @@ import java.lang.annotation.Target;
  * }</pre>
  */
 @Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.PARAMETER)
+@Target({ElementType.PARAMETER, ElementType.TYPE})
 public @interface ProxyInstance {
 }

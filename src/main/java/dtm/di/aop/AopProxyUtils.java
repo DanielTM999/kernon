@@ -50,9 +50,9 @@ public class AopProxyUtils extends AopUtils {
      * @param proxy Instância proxy (ou objeto real) no qual o método será executado.
      */
     @Override
-    public void applyBefore(Method method, Object[] args, Object proxy) {
+    public void applyBefore(Method method, Object[] args, Object proxy, Object realInstance) {
         for (AspectHandler handler : handlers) {
-            boolean apply = shouldApplyHandler(handler, method, args, proxy);
+            boolean apply = shouldApplyHandler(handler, method, args, proxy, realInstance);
 
             if(!apply) continue;
 
@@ -64,7 +64,8 @@ public class AopProxyUtils extends AopUtils {
                             before,
                             method,
                             args,
-                            proxy
+                            proxy,
+                            realInstance
                     );
                 } catch (Exception e) {
                     String className = (handler.instance != null) ?  handler.instance.getClass().toString() : method.getName();
@@ -89,11 +90,11 @@ public class AopProxyUtils extends AopUtils {
      * @return O resultado final, podendo ser o original ou um valor alterado pelo aspecto {@code @AfterExecution}.
      */
     @Override
-    public Object applyAfter(Method method, Object[] args, Object proxy, Object currentResult) {
+    public Object applyAfter(Method method, Object[] args, Object proxy, Object realInstance, Object currentResult) {
         Object result = currentResult;
 
         for (AspectHandler handler : handlers) {
-            boolean apply = shouldApplyHandler(handler, method, args, proxy);
+            boolean apply = shouldApplyHandler(handler, method, args, proxy, realInstance);
 
             if(!apply) continue;
 
@@ -107,6 +108,7 @@ public class AopProxyUtils extends AopUtils {
                             method,
                             args,
                             proxy,
+                            realInstance,
                             result
                     );
                     if (newResult != null && method.getReturnType().isAssignableFrom(newResult.getClass())) {
@@ -164,10 +166,10 @@ public class AopProxyUtils extends AopUtils {
      * @param proxy Instância proxy (ou objeto real).
      * @return {@code true} se deve aplicar o aspecto, {@code false} caso contrário.
      */
-    private boolean shouldApplyHandler(AspectHandler handler, Method method, Object[] args, Object proxy) {
+    private boolean shouldApplyHandler(AspectHandler handler, Method method, Object[] args, Object proxy, Object realInstance) {
         if (handler.pointcut == null) return true;
         try {
-            Object result = executeMethod(handler.instance, handler.pointcut, method, args, proxy);
+            Object result = executeMethod(handler.instance, handler.pointcut, method, args, proxy, realInstance);
             return result instanceof Boolean b && b;
         } catch (Exception e) {
             return false;
@@ -197,9 +199,10 @@ public class AopProxyUtils extends AopUtils {
             Method methodExecute,
             Method methodArgs,
             Object[] args,
-            Object proxy
+            Object proxy,
+            Object realInstance
     ) throws Exception{
-        return executeMethod(instance, methodExecute, methodArgs, args, proxy, null);
+        return executeMethod(instance, methodExecute, methodArgs, args, proxy, realInstance, null);
     }
 
     /**
@@ -226,6 +229,7 @@ public class AopProxyUtils extends AopUtils {
             Method methodArgs,
             Object[] args,
             Object proxy,
+            Object realInstance,
             Object currentResult
     ) throws Exception{
         methodExecute.setAccessible(true);
@@ -238,11 +242,14 @@ public class AopProxyUtils extends AopUtils {
 
             boolean isProxy = parameter.isAnnotationPresent(ProxyInstance.class);
             boolean isResult = parameter.isAnnotationPresent(ResultProxy.class);
+            boolean isRealInstance = parameter.isAnnotationPresent(ReferenceIntance.class);
 
             if (isProxy) {
                 invokeArgs[i] = proxy;
             } else if (isResult) {
                 invokeArgs[i] = currentResult;
+            } else if (isRealInstance) {
+                invokeArgs[i] = realInstance;
             } else if (Method.class.isAssignableFrom(paramType)) {
                 invokeArgs[i] = methodArgs;
             } else if (paramType.isArray() && paramType.getComponentType().equals(Object.class)) {

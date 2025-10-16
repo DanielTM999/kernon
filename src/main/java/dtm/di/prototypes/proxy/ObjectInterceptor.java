@@ -3,14 +3,12 @@ package dtm.di.prototypes.proxy;
 import dtm.di.aop.AopProxyUtils;
 import dtm.di.core.DependencyContainer;
 import dtm.di.core.aop.AopUtils;
-import net.bytebuddy.implementation.bind.annotation.AllArguments;
-import net.bytebuddy.implementation.bind.annotation.Origin;
-import net.bytebuddy.implementation.bind.annotation.RuntimeType;
-import net.bytebuddy.implementation.bind.annotation.This;
+import net.bytebuddy.implementation.bind.annotation.*;
 
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.util.Optional;
+import java.util.concurrent.Callable;
 
 public class ObjectInterceptor {
     private final Object delegate;
@@ -22,12 +20,19 @@ public class ObjectInterceptor {
     }
 
     @RuntimeType
-    public Object intercept(@Origin Method method, @AllArguments Object[] args, @This Object proxy) throws Throwable  {
-        AopUtils aopUtils = AopProxyUtils.getInstance(dependencyContainer);
-        aopUtils.applyBefore(method, args, proxy);
+    public Object intercept(
+            @Origin Method method,
+            @AllArguments Object[] args,
+            @This Object proxy,
+            @SuperCall Callable<?> superMethod
+    ) throws Throwable  {
+        final AopUtils aopUtils = AopProxyUtils.getInstance(dependencyContainer);
+        final Method realMethod = getRealMethodFromDelegate(method);
+
+        aopUtils.applyBefore(realMethod, args, proxy, delegate);
         try {
-            Object result = method.invoke(delegate, args);
-            return aopUtils.applyAfter(method, args, proxy, result);
+            Object result = superMethod.call();
+            return aopUtils.applyAfter(realMethod, args, proxy, delegate, result);
         }catch (InvocationTargetException invocationTargetException){
             Throwable cause = invocationTargetException.getCause();
             if (cause == null) {
@@ -39,6 +44,19 @@ public class ObjectInterceptor {
             throw cause;
         }
 
+    }
+
+    private Method getRealMethodFromDelegate(Method proxyMethod) {
+        try {
+            return delegate.getClass().getMethod(proxyMethod.getName(), proxyMethod.getParameterTypes());
+        } catch (NoSuchMethodException e) {
+            try {
+                return delegate.getClass()
+                        .getDeclaredMethod(proxyMethod.getName(), proxyMethod.getParameterTypes());
+            } catch (NoSuchMethodException ex) {
+                return proxyMethod;
+            }
+        }
     }
 
 

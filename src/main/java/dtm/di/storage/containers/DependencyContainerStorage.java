@@ -243,7 +243,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     public <T> T newInstance(Class<T> referenceClass) throws NewInstanceException {
         throwIfUnload();
         try{
-            return (T)createObject(referenceClass, false);
+            return (T)createObject(referenceClass, isAop(referenceClass));
         }catch (Exception e){
             throw new NewInstanceException(e.getMessage(), referenceClass, e);
         }
@@ -253,7 +253,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     public <T> T newInstance(Class<T> referenceClass, Object... contructorArgs) throws NewInstanceException {
         throwIfUnload();
         try{
-            return (T)createObject(referenceClass, false, contructorArgs);
+            return (T)createObject(referenceClass, isAop(referenceClass), contructorArgs);
         }catch (Exception e){
             throw new NewInstanceException(e.getMessage(), referenceClass, e);
         }

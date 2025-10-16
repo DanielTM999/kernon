@@ -17,6 +17,6 @@ import java.lang.reflect.Method;
  * ✔️ Essa classe existe para desacoplar a definição de interceptadores da implementação do mecanismo AOP.
  */
 public abstract class AopUtils {
-    public abstract void applyBefore(Method method, Object[] args, Object proxy);
-    public abstract Object applyAfter(Method method, Object[] args, Object proxy, Object currentResult);
+    public abstract void applyBefore(Method method, Object[] args, Object proxy, Object realIntance);
+    public abstract Object applyAfter(Method method, Object[] args, Object proxy, Object realIntance, Object currentResult);
 }
