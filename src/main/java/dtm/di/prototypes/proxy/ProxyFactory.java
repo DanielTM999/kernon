@@ -2,16 +2,19 @@ package dtm.di.prototypes.proxy;
 
 import dtm.di.annotations.aop.ProxyInstance;
 import dtm.di.core.DependencyContainer;
+import dtm.di.prototypes.ProxyObject;
 import lombok.NonNull;
 import net.bytebuddy.ByteBuddy;
 import net.bytebuddy.description.annotation.AnnotationDescription;
 import net.bytebuddy.dynamic.DynamicType;
 import net.bytebuddy.dynamic.loading.ClassLoadingStrategy;
+import net.bytebuddy.implementation.FieldAccessor;
 import net.bytebuddy.implementation.MethodDelegation;
 import net.bytebuddy.matcher.ElementMatchers;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -37,6 +40,8 @@ public class ProxyFactory {
 
     public Object proxyObject() throws Exception {
         String interceptorFieldName = "___interceptor";
+        String realInstanceFieldName = "___realInstance";
+
         Constructor<?> constructor = getConstructorWithLeastParameters(clazz);
         constructor.setAccessible(true);
         Object[] args = buildDummyArgs(constructor.getParameterTypes());
@@ -48,9 +53,13 @@ public class ProxyFactory {
                     .build();
             try (DynamicType.Unloaded<?> unloaded = new ByteBuddy()
                     .subclass(cls)
+                    .implement(ProxyObject.class)
                     .defineField(interceptorFieldName, ObjectInterceptor.class)
+                    .defineField(realInstanceFieldName, Object.class, Modifier.PRIVATE)
                     .method(ElementMatchers.isDeclaredBy(cls))
                     .intercept(MethodDelegation.toField(interceptorFieldName))
+                    .method(ElementMatchers.named("getRealInstance"))
+                    .intercept(FieldAccessor.ofField(realInstanceFieldName))
                     .annotateType(proxyAnnotation)
                     .make()) {
 
@@ -66,9 +75,15 @@ public class ProxyFactory {
         Constructor<?> proxyConstructor = proxyClass.getDeclaredConstructor(constructor.getParameterTypes());
         proxyConstructor.setAccessible(true);
         Object proxyInstance = proxyConstructor.newInstance(args);
+
+
         Field interceptorField = proxyClass.getDeclaredField(interceptorFieldName);
         interceptorField.setAccessible(true);
         interceptorField.set(proxyInstance, new ObjectInterceptor(instance, dependencyContainer));
+
+        Field realInstanceField = proxyClass.getDeclaredField(realInstanceFieldName);
+        realInstanceField.setAccessible(true);
+        realInstanceField.set(proxyInstance, instance);
 
         return proxyInstance;
     }

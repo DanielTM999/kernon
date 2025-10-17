@@ -67,6 +67,8 @@ public class AopProxyUtils extends AopUtils {
                             proxy,
                             realInstance
                     );
+                }catch (RuntimeException re){
+                    throw re;
                 } catch (Exception e) {
                     String className = (handler.instance != null) ?  handler.instance.getClass().toString() : method.getName();
                     throw new RuntimeException("Erro no método @BeforeExecution: "+className, e);

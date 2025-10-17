@@ -42,6 +42,12 @@ public class ObjectInterceptor {
                 cause = cause.getCause();
             }
             throw cause;
+        }catch (RuntimeException runtimeException){
+            Throwable cause = runtimeException.getCause();
+            while (cause instanceof InvocationTargetException && cause.getCause() != null) {
+                cause = cause.getCause();
+            }
+            throw cause;
         }
 
     }

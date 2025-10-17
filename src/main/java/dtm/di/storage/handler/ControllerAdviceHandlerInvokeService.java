@@ -2,9 +2,11 @@ package dtm.di.storage.handler;
 
 import dtm.di.annotations.HandleException;
 import dtm.di.core.ExceptionHandlerInvoker;
+import dtm.di.prototypes.ProxyObject;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.security.InvalidParameterException;
 import java.util.Map;
@@ -19,8 +21,8 @@ public class ControllerAdviceHandlerInvokeService implements ExceptionHandlerInv
     private final Object controllerAdviceUserInstance;
     private final ExceptionHandlerInvoker defaultHandlerInvoker;
 
-    public ControllerAdviceHandlerInvokeService( Object controllerAdviceUserInstance, ExceptionHandlerInvoker defaultHandlerInvoker) {
-        this.controllerAdviceUserInstance = controllerAdviceUserInstance;
+    public ControllerAdviceHandlerInvokeService(Object controllerAdviceUserInstance, ExceptionHandlerInvoker defaultHandlerInvoker) {
+        this.controllerAdviceUserInstance = (controllerAdviceUserInstance instanceof ProxyObject proxyObject) ? proxyObject.getRealInstance() : controllerAdviceUserInstance;
         this.defaultHandlerInvoker = defaultHandlerInvoker;
         this.throwableMethodMap = new ConcurrentHashMap<>();
         initExceptionHandlers();
@@ -31,6 +33,11 @@ public class ControllerAdviceHandlerInvokeService implements ExceptionHandlerInv
         Throwable realThrowable = unwrapThrowable(throwable);
         Class<?> throwableClass = realThrowable.getClass();
         Method handlerMethod = throwableMethodMap.get(throwableClass);
+
+        if (handlerMethod == null) {
+            handlerMethod = findCompatibleHandler(throwableClass);
+        }
+
         if (handlerMethod != null) {
             try {
                 handlerMethod.setAccessible(true);
@@ -51,8 +58,18 @@ public class ControllerAdviceHandlerInvokeService implements ExceptionHandlerInv
         }
     }
 
+    private Method findCompatibleHandler(Class<?> throwableClass) {
+        for (Map.Entry<Class<? extends Throwable>, Method> entry : throwableMethodMap.entrySet()) {
+            if (entry.getKey().isAssignableFrom(throwableClass)) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
     private void initExceptionHandlers() {
         Method[] methods = controllerAdviceUserInstance.getClass().getDeclaredMethods();
+
         for (Method method : methods) {
             if (method.isAnnotationPresent(HandleException.class)) {
                 HandleException annotation = method.getAnnotation(HandleException.class);
@@ -68,13 +85,23 @@ public class ControllerAdviceHandlerInvokeService implements ExceptionHandlerInv
 
     private Throwable unwrapThrowable(Throwable throwable) {
         Throwable t = throwable;
-        while (t instanceof ExecutionException
-                || t instanceof CompletionException) {
-            if (t.getCause() != null) {
-                t = t.getCause();
-            } else {
-                break;
+        while (true) {
+            if (
+                    t instanceof ExecutionException
+                    || t instanceof CompletionException
+                    || t instanceof InvocationTargetException
+            ) {
+
+                Throwable cause = (t instanceof InvocationTargetException)
+                        ? ((InvocationTargetException) t).getTargetException()
+                        : t.getCause();
+
+                if (cause != null && cause != t) {
+                    t = cause;
+                    continue;
+                }
             }
+            break;
         }
         return t;
     }
