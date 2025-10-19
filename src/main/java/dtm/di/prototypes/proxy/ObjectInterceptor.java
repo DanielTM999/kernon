@@ -23,15 +23,14 @@ public class ObjectInterceptor {
     public Object intercept(
             @Origin Method method,
             @AllArguments Object[] args,
-            @This Object proxy,
-            @SuperCall Callable<?> superMethod
+            @This Object proxy
     ) throws Throwable  {
         final AopUtils aopUtils = AopProxyUtils.getInstance(dependencyContainer);
         final Method realMethod = getRealMethodFromDelegate(method);
 
         aopUtils.applyBefore(realMethod, args, proxy, delegate);
         try {
-            Object result = superMethod.call();
+            Object result = realMethod.invoke(delegate, args);
             return aopUtils.applyAfter(realMethod, args, proxy, delegate, result);
         }catch (InvocationTargetException invocationTargetException){
             Throwable cause = invocationTargetException.getCause();
@@ -64,6 +63,5 @@ public class ObjectInterceptor {
             }
         }
     }
-
 
 }

@@ -56,7 +56,9 @@ public class ProxyFactory {
                     .implement(ProxyObject.class)
                     .defineField(interceptorFieldName, ObjectInterceptor.class)
                     .defineField(realInstanceFieldName, Object.class, Modifier.PRIVATE)
-                    .method(ElementMatchers.isDeclaredBy(cls))
+                    .method(
+                            ElementMatchers.not(ElementMatchers.isDeclaredBy(Object.class))
+                    )
                     .intercept(MethodDelegation.toField(interceptorFieldName))
                     .method(ElementMatchers.named("getRealInstance"))
                     .intercept(FieldAccessor.ofField(realInstanceFieldName))

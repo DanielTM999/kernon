@@ -41,7 +41,7 @@ public class ControllerAdviceHandlerInvokeService implements ExceptionHandlerInv
         if (handlerMethod != null) {
             try {
                 handlerMethod.setAccessible(true);
-                Object[] args = resolveMethodArguments(handlerMethod, thread, throwable);
+                Object[] args = resolveMethodArguments(handlerMethod, thread, realThrowable);
                 handlerMethod.invoke(controllerAdviceUserInstance, args);
                 return;
             } catch (Exception e) {
@@ -88,12 +88,12 @@ public class ControllerAdviceHandlerInvokeService implements ExceptionHandlerInv
         while (true) {
             if (
                     t instanceof ExecutionException
-                    || t instanceof CompletionException
                     || t instanceof InvocationTargetException
+                    || t instanceof RuntimeException
             ) {
 
-                Throwable cause = (t instanceof InvocationTargetException)
-                        ? ((InvocationTargetException) t).getTargetException()
+                Throwable cause = (t instanceof InvocationTargetException targetException)
+                        ? targetException.getTargetException()
                         : t.getCause();
 
                 if (cause != null && cause != t) {
