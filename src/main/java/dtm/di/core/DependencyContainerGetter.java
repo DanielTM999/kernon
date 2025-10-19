@@ -33,6 +33,15 @@ public interface DependencyContainerGetter {
     <T> T getDependency(Class<T> reference, String qualifier);
 
     /**
+     * Obtém uma Lista de instância da dependência associada à classe de referência e qualificadora específica.
+     *
+     * @param <T>       tipo da dependência esperada
+     * @param reference classe que representa o tipo da dependência
+     * @return Lista instância da dependência qualificada
+     */
+    <T> List<T> getDependencyList(Class<T> reference);
+
+    /**
      * Retorna um mapa contendo todas as instâncias gerenciadas cujo tipo é atribuível a partir do tipo fornecido.
      *
      * <p>Este método busca todas as instâncias que são do tipo especificado ou de subtipos dele,

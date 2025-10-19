@@ -9,6 +9,7 @@ import dtm.di.common.StopWatch;
 import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
 import dtm.di.exceptions.*;
+import dtm.di.prototypes.CompositeDependency;
 import dtm.di.prototypes.Dependency;
 import dtm.di.prototypes.LazyDependency;
 import dtm.di.prototypes.RegistrationFunction;
@@ -18,8 +19,9 @@ import dtm.di.storage.ClassFinderConfigurationsStorage;
 import dtm.di.storage.DependencyObject;
 import dtm.di.storage.ServiceBean;
 import dtm.di.storage.StaticContainer;
+import dtm.di.storage.composite.CompositeDependencyStorage;
 import dtm.di.storage.lazy.Lazy;
-import dtm.di.storage.lazy.LazyObject;
+import dtm.di.storage.lazy.ParamtrizedObject;
 import dtm.discovery.core.ClassFinder;
 import dtm.discovery.core.ClassFinderConfigurations;
 import dtm.discovery.finder.ClassFinderService;
@@ -239,6 +241,23 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
             final Dependency dependencyObject = listOfDependency.stream().filter(d -> d.getQualifier().equals(qualifier)).findFirst().orElseThrow();
             Object instance = dependencyObject.getDependency();
             return reference.cast(instance);
+        }catch (Exception e){
+            return null;
+        }
+    }
+
+    @Override
+    public <T> List<T> getDependencyList(Class<T> reference) {
+        throwIfUnload();
+        try{
+            final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(reference, Collections.emptyList());
+            return listOfDependency.stream().map(d -> {
+                try{
+                    return reference.cast(d.getDependency());
+                } catch (Exception e) {
+                    return null;
+                }
+            }).filter(Objects::nonNull).collect(Collectors.toList());
         }catch (Exception e){
             return null;
         }
@@ -979,78 +998,86 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
     }
 
     private Object getDependecyObjectByParam(Parameter parameter){
-        final LazyObject lazyObject = extractType(parameter);
-        final Class<?> clazzVariable = lazyObject.getClazz();
-        final boolean isLazy = lazyObject.isLazy();
+        final ParamtrizedObject paramtrizedObject = extractType(parameter);
 
-        if(!isLazy){
-            return getDependency(clazzVariable);
+        if(paramtrizedObject.isParametrized()){
+            final Class<?> clazzVariable = paramtrizedObject.getParamClass();
+
+            if(paramtrizedObject.getBaseClass().equals(LazyDependency.class)){
+                return Lazy.of(() -> getDependency(clazzVariable));
+            }else if(paramtrizedObject.getBaseClass().equals(CompositeDependency.class)){
+                return new CompositeDependencyStorage<>(getDependencyList(clazzVariable));
+            }else{
+                return null;
+            }
         }else{
-            return Lazy.of(() -> getDependency(clazzVariable));
+            return getDependency(paramtrizedObject.getBaseClass());
         }
     }
 
-    private LazyObject extractType(Field field){
+
+    private ParamtrizedObject extractType(Field field){
         Class<?> fieldType = field.getType();
-        if (LazyDependency.class.isAssignableFrom(fieldType)) {
-            Type genericType = field.getGenericType();
+        Type genericType = field.getGenericType();
 
-            if (genericType instanceof ParameterizedType paramType) {
-                Type[] typeArgs = paramType.getActualTypeArguments();
-
-                if (typeArgs.length == 1 && typeArgs[0] instanceof Class) {
-                    return new LazyObject((Class<?>) typeArgs[0], true);
-                }
+        if (genericType instanceof ParameterizedType paramType) {
+            Type[] typeArgs = paramType.getActualTypeArguments();
+            if (typeArgs.length == 1 && typeArgs[0] instanceof Class) {
+                return new ParamtrizedObject(fieldType, (Class<?>) typeArgs[0], true);
             }
         }
-        return new LazyObject(fieldType, false);
+
+        return new ParamtrizedObject(fieldType, fieldType, false);
     }
 
-    private LazyObject extractType(Parameter parameter){
+    private ParamtrizedObject extractType(Parameter parameter){
         Class<?> fieldType = parameter.getType();
         Type genericType = parameter.getParameterizedType();
 
-        if (LazyDependency.class.isAssignableFrom(fieldType)) {
-            if (genericType instanceof ParameterizedType paramType) {
-                Type[] typeArgs = paramType.getActualTypeArguments();
-                if (typeArgs.length == 1 && typeArgs[0] instanceof Class) {
-                    return new LazyObject((Class<?>) typeArgs[0], true);
-                }
+        if (genericType instanceof ParameterizedType paramType) {
+            Type[] typeArgs = paramType.getActualTypeArguments();
+            if (typeArgs.length == 1 && typeArgs[0] instanceof Class) {
+                return new ParamtrizedObject(fieldType, (Class<?>) typeArgs[0], true);
             }
         }
 
-        return new LazyObject(fieldType, false);
+        return new ParamtrizedObject(fieldType, fieldType, false);
     }
 
     private void injectVariable(Field variable, Object instance){
         try{
-            final LazyObject lazyObject = extractType(variable);
-            final Class<?> clazzVariable = lazyObject.getClazz();
-            final boolean isLazy = lazyObject.isLazy();
+            final ParamtrizedObject paramtrizedObject = extractType(variable);
 
             if(!variable.canAccess(instance)){
                 variable.setAccessible(true);
             }
 
-            if(!isLazy){
-                Object targetInstance = getObjectToInjectVariable(variable, clazzVariable, instance);
-                variable.set(instance, targetInstance);
+
+            if(paramtrizedObject.isParametrized()){
+                final Class<?> clazzVariable = paramtrizedObject.getParamClass();
+
+                if(paramtrizedObject.getBaseClass().equals(LazyDependency.class)){
+                    Supplier<Object> getDependecyLazy = () -> {
+                        try{
+                            return getObjectToInjectVariable(variable, clazzVariable, instance);
+                        }catch (Exception e){
+                            log.error("Erro ao carregar LAZY da variável {}. Causa: {}", variable.getName(), e.getMessage(), e);
+                            return null;
+                        }
+                    };
+                    variable.set(instance, Lazy.of(getDependecyLazy));
+                }else if(paramtrizedObject.getBaseClass().equals(CompositeDependency.class)){
+                    List<?> dependencyList = getObjectListToInjectVariable(clazzVariable);
+                    variable.set(instance, new CompositeDependencyStorage<>(dependencyList));
+                }
+
             }else{
-                Supplier<Object> getDependecyLazy = () -> {
-                    try{
-                        return getObjectToInjectVariable(variable, clazzVariable, instance);
-                    }catch (Exception e){
-                        String message = "Erro ao definir variavel "+variable.getName()+" ==> cause: "+e.getMessage();
-                        System.out.println(message);
-                        return null;
-                    }
-                };
-                variable.set(instance, Lazy.of(getDependecyLazy));
+                Object targetInstance = getObjectToInjectVariable(variable, paramtrizedObject.getBaseClass(), instance);
+                variable.set(instance, targetInstance);
             }
 
         }catch (Exception e){
-            String message = "Erro ao definir variavel "+variable.getName()+" ==> cause: "+e.getMessage();
-            System.out.println(message);
+            log.error("Erro ao injetar dependência na variável {}. Causa: {}", variable.getName(), e.getMessage(), e);
         }
     }
 
@@ -1068,6 +1095,26 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
         Dependency dependencyObject = listOfDependency.stream().filter(d -> d.getQualifier().equals(qualifierName)).findFirst().orElseThrow(() -> new DependencyContainerException("Dependencia não encontrada para: "+clazzVariable));
         return dependencyObject.getDependency();
     }
+
+    private <T> List<T> getObjectListToInjectVariable(Class<T> clazzVariable) throws Exception{
+        List<Dependency> listOfDependency = dependencyContainer.getOrDefault(clazzVariable, Collections.emptyList());
+        if(listOfDependency.isEmpty() && childrenRegistration){
+            try {
+                registerDependency(clazzVariable);
+            } catch (InvalidClassRegistrationException e) {
+                throw new DependencyContainerRuntimeException(e);
+            }
+            listOfDependency = dependencyContainer.getOrDefault(clazzVariable, Collections.emptyList());
+        }
+        return listOfDependency.stream().map(d -> {
+            try{
+                return clazzVariable.cast(d.getDependency());
+            } catch (Exception e) {
+                return null;
+            }
+        }).filter(Objects::nonNull).collect(Collectors.toList());
+    }
+
 
     private void registerExternalBeenNoSinglenton(@NonNull Object instance, Method method, String qualifier) throws InvalidClassRegistrationException{
         Class<?> beenClass = instance.getClass();
