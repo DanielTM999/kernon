@@ -24,6 +24,24 @@ public class Lazy {
             }
 
             @Override
+            public T require() {
+                T value = get();
+                if(value != null) return value;
+                throw new LazyDependencyException("Dependecia não carregada.");
+            }
+
+            @Override
+            public <E extends Throwable> T require(Supplier<E> onErrorThrow) throws E {
+                T value = get();
+                if(value != null) return value;
+                if(onErrorThrow != null){
+                    E exception = onErrorThrow.get();
+                    if(exception != null) throw exception;
+                }
+                throw new LazyDependencyException("Dependecia não carregada.");
+            }
+
+            @Override
             public boolean isPresent() {
                 if (dependency == null) {
                     dependency = supplier.get();
@@ -79,6 +97,24 @@ public class Lazy {
                 } catch (InterruptedException | CancellationException | ExecutionException e) {
                     return null;
                 }
+            }
+
+            @Override
+            public T require() {
+                T value = get();
+                if(value != null) return value;
+                throw new LazyDependencyException("Dependecia não carregada.");
+            }
+
+            @Override
+            public <E extends Throwable> T require(Supplier<E> onErrorThrow) throws E {
+                T value = get();
+                if(value != null) return value;
+                if(onErrorThrow != null){
+                    E exception = onErrorThrow.get();
+                    if(exception != null) throw exception;
+                }
+                throw new LazyDependencyException("Dependecia não carregada.");
             }
 
             @Override
