@@ -43,7 +43,6 @@ public class ManagedApplicationStartup {
     private static final Logger logger = LoggerFactory.getLogger(ManagedApplicationStartup.class);
     private static Method runMethod;
     private static Method throwableMethod;
-    private static DependencyContainer dependencyContainer;
     private static Class<?> bootableClass;
     private static Class<?> mainClass;
     private static Map<LifecycleHook.Event, List<Method>> eventMethodMap;
@@ -52,16 +51,27 @@ public class ManagedApplicationStartup {
     private static ScheduledExecutorService scheduledExecutorService;
     private static Thread.UncaughtExceptionHandler uncaughtExceptionHandler;
     private static ExceptionHandlerInvoker handlerInvoker;
-    private final static AtomicReference<ExceptionHandlerInvoker> userControllerAdvice = new AtomicReference<>();
     private static Future<Void> controllerAdviceScanner;
+    private final static AtomicReference<DependencyContainer> dependencyContainerRef = new AtomicReference<>();
+    private final static AtomicReference<String[]> lauchArgsRef = new AtomicReference<>(new String[0]);
+    private final static AtomicReference<ExceptionHandlerInvoker> userControllerAdvice = new AtomicReference<>();
     private final static AtomicBoolean controllerAdviceScannerIsLoad = new AtomicBoolean(false);
 
 
     public static void doRun(){
-        doRun(false);
+        doRun(false, new String[0]);
     }
 
     public static void doRun(boolean log){
+        doRun(log, new String[0]);
+    }
+
+    public static void doRun(String[] args){
+        doRun(false, args);
+    }
+
+    public static void doRun(boolean log, String[] args){
+        lauchArgsRef.set(args);
         handlerInvoker = getDefaultExceptionHandlerInvoker();
         setExceptionHandler();
         logEnabled = log;
@@ -82,7 +92,7 @@ public class ManagedApplicationStartup {
         eventMethodMap = getEventMethodMap();
         logInfo("Hooks carregados para os eventos: {}", eventMethodMap.keySet());
 
-        dependencyContainer = getDependencyContainer();
+        dependencyContainerRef.set(getDependencyContainer());
         logInfo("DependencyContainer obtido");
 
         getRunMethod();
@@ -102,7 +112,7 @@ public class ManagedApplicationStartup {
     }
 
     public static DependencyContainer getCurrentDependencyContainer(){
-        return dependencyContainer;
+        return dependencyContainerRef.get();
     }
 
     private static Class<?> getMainClass(){
@@ -268,6 +278,7 @@ public class ManagedApplicationStartup {
         AtomicReference<Throwable> exception = new AtomicReference<>(null);
         logLifecycle("BOOT_START", true);
         invokeHooks(LifecycleHook.Event.BEFORE_ALL);
+        DependencyContainer dependencyContainer = getCurrentDependencyContainer();
         try(executor){
             CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
                 try {
@@ -293,7 +304,7 @@ public class ManagedApplicationStartup {
                 try {
                     logLifecycle("STARTUP_METHOD", true);
                     runSchedulerAsync();
-                    runMethod.invoke(null);
+                    runStarterMethod();
                     logLifecycle("STARTUP_METHOD", false);
                 } catch (Exception e) {
                     Throwable rootCause = getRootCause(e);
@@ -317,7 +328,7 @@ public class ManagedApplicationStartup {
     private static void runSchedulerAsync(){
         if(scheduledExecutorService != null){
             CompletableFuture.runAsync(() -> {
-                for(Class<?> clazz : dependencyContainer.getLoadedSystemClasses()){
+                for(Class<?> clazz : getCurrentDependencyContainer().getLoadedSystemClasses()){
                     if(!clazz.isAnnotationPresent(Schedule.class)) continue;
                     try{
                         executeScheduleItem(clazz);
@@ -329,6 +340,20 @@ public class ManagedApplicationStartup {
                 }
             });
         }
+    }
+
+    private static void runStarterMethod() throws InvocationTargetException, IllegalAccessException {
+        Object[] methodArgs = new Object[runMethod.getParameterCount()];
+
+        Class<?>[] parameterTypes = runMethod.getParameterTypes();
+        for (int i = 0; i < parameterTypes.length; i++) {
+            if(parameterTypes[i].equals(DependencyContainer.class)){
+                methodArgs[i] = getCurrentDependencyContainer();
+            } else if (parameterTypes[i].equals(String[].class)) {
+                methodArgs[i] = lauchArgsRef.get();
+            }
+        }
+        runMethod.invoke(null, methodArgs);
     }
 
     private static void logLifecycle(String label, boolean start) {
@@ -433,7 +458,7 @@ public class ManagedApplicationStartup {
 
         if(methods.isEmpty()) return;
 
-        Object instance = dependencyContainer.newInstance(clazz);
+        Object instance = getCurrentDependencyContainer().newInstance(clazz);
 
         for(Method method : methods){
             ScheduleMethod scheduleMethod = method.getAnnotation(ScheduleMethod.class);
@@ -542,6 +567,7 @@ public class ManagedApplicationStartup {
     }
 
     private static void defineDependencyContainerExceptionHandler(){
+        DependencyContainer dependencyContainer = getCurrentDependencyContainer();
         if(dependencyContainer == null){
             defineSimpleExceptionHandler();
             return;
@@ -590,6 +616,7 @@ public class ManagedApplicationStartup {
             thread.setName("ControllerAdviceScannerThread");
             return thread;
         });
+        final DependencyContainer dependencyContainer = getCurrentDependencyContainer();
         try(executor){
             controllerAdviceScanner = CompletableFuture.runAsync(() -> {
                 try {
