@@ -1,5 +1,6 @@
 package dtm.di.prototypes.proxy;
 
+import dtm.di.annotations.aop.NotIntercept;
 import dtm.di.annotations.aop.ProxyInstance;
 import dtm.di.core.DependencyContainer;
 import dtm.di.prototypes.ProxyObject;
@@ -58,6 +59,7 @@ public class ProxyFactory {
                     .defineField(realInstanceFieldName, Object.class, Modifier.PRIVATE)
                     .method(
                             ElementMatchers.not(ElementMatchers.isDeclaredBy(Object.class))
+                                    .and(ElementMatchers.not(ElementMatchers.isAnnotatedWith(NotIntercept.class)))
                     )
                     .intercept(MethodDelegation.toField(interceptorFieldName))
                     .method(ElementMatchers.named("getRealInstance"))
