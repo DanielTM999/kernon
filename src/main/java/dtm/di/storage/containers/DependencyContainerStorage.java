@@ -28,10 +28,13 @@ import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import java.io.File;
 import java.lang.annotation.Annotation;
+import java.lang.ref.SoftReference;
+import java.lang.ref.WeakReference;
 import java.lang.reflect.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -909,7 +912,13 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 return Lazy.of(() -> getDependency(clazzVariable));
             }else if(paramtrizedObject.getBaseClass().equals(CompositeDependency.class)){
                 return new CompositeDependencyStorage<>(getDependencyList(clazzVariable));
-            }else{
+            }else if(paramtrizedObject.getBaseClass().equals(AtomicReference.class)){
+                return new AtomicReference<>(getDependencyList(clazzVariable));
+            }else if(paramtrizedObject.getBaseClass().equals(WeakReference.class)){
+                return new WeakReference<>(getDependencyList(clazzVariable));
+            }else if(paramtrizedObject.getBaseClass().equals(SoftReference.class)){
+                return new SoftReference<>(getDependencyList(clazzVariable));
+            } else {
                 return null;
             }
         }else{
@@ -970,6 +979,12 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 }else if(paramtrizedObject.getBaseClass().equals(CompositeDependency.class)){
                     List<?> dependencyList = getObjectListToInjectVariable(clazzVariable);
                     variable.set(instance, new CompositeDependencyStorage<>(dependencyList));
+                }else if(paramtrizedObject.getBaseClass().equals(AtomicReference.class)){
+                    variable.set(instance, new AtomicReference<>(getDependencyList(clazzVariable)));
+                }else if(paramtrizedObject.getBaseClass().equals(WeakReference.class)){
+                    variable.set(instance, new WeakReference<>(getDependencyList(clazzVariable)));
+                }else if(paramtrizedObject.getBaseClass().equals(SoftReference.class)){
+                    variable.set(instance, new SoftReference<>(getDependencyList(clazzVariable)));
                 }
 
             }else{
@@ -1122,7 +1137,12 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         Class<?> superClass = clazz.getSuperclass();
         Class<?>[] interfaces = clazz.getInterfaces();
 
-        if (superClass != null && !superClass.equals(Object.class) && !superClass.isInterface()) {
+        if (
+                superClass != null &&
+                !superClass.equals(Object.class) &&
+                !superClass.isInterface() &&
+                !clazz.isAnnotationPresent(ExcludeRootRegistration.class)
+        ) {
             dependencyContainer.put(superClass, listOfDependency);
         }
 
