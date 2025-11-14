@@ -20,18 +20,6 @@ public interface DependencyContainerConfigurator {
     void disableChildrenRegistration();
 
     /**
-     * Habilita a injeção de dependências em paralelo.
-     *
-     * Isso pode melhorar o desempenho ao injetar dependências em múltiplos objetos simultaneamente,
-     * utilizando threads paralelas.
-     */
-    void enableParallelInjection();
-    /**
-     * Desabilita a injeção de dependências em paralelo.
-     */
-    void disableParallelInjection();
-
-    /**
      * Habilita o suporte a Aspect-Oriented Programming (AOP).
      *
      * Permite a aplicação de proxies e interceptadores para adicionar comportamentos
@@ -42,5 +30,17 @@ public interface DependencyContainerConfigurator {
      * Desabilita o suporte a Aspect-Oriented Programming (AOP).
      */
     void disableAOP();
+
+    /**
+     * Define a estratégia de injeção de dependências utilizada pelo contêiner.
+     *
+     * A estratégia controla como o contêiner executa o processo de injeção:
+     * - Dependendo do modo selecionado, a injeção pode ser executada de forma
+     *   paralela, sequencial ou adaptativa conforme o volume de dependências.
+     *
+     * @param strategy A estratégia de injeção a ser utilizada pelo contêiner.
+     *                 Não deve ser {@code null}.
+     */
+    void setInjectionStrategy(InjectionStrategy strategy);
 
 }

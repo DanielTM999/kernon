@@ -8,6 +8,7 @@ import dtm.di.common.ConcurrentStopWatch;
 import dtm.di.common.StopWatch;
 import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
+import dtm.di.core.InjectionStrategy;
 import dtm.di.exceptions.*;
 import dtm.di.prototypes.CompositeDependency;
 import dtm.di.prototypes.Dependency;
@@ -41,6 +42,7 @@ import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -51,6 +53,8 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
     private final StopWatch stopWatch;
     private final ExecutorService mainExecutor;
     private final ExecutorService mainVirtualExecutor;
+
+    private final AtomicReference<InjectionStrategy> injectionStrategy;
 
     private final Map<Class<?>, List<Dependency>> dependencyContainer;
     private final ClassFinder classFinder;
@@ -107,6 +111,7 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
         this.dependencyContainer = new ConcurrentHashMap<>();
         this.loaded = new AtomicBoolean(false);
         this.classFinder = new ClassFinderService();
+        this.injectionStrategy = new AtomicReference<>(InjectionStrategy.ADAPTIVE);
         this.childrenRegistration = false;
         this.parallelInjection = true;
         this.foldersToLoad = new ArrayList<>();
@@ -209,13 +214,8 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
     }
 
     @Override
-    public void enableParallelInjection() {
-        this.parallelInjection = true;
-    }
-
-    @Override
-    public void disableParallelInjection() {
-        this.parallelInjection = false;
+    public void setInjectionStrategy(InjectionStrategy injectionStrategy) {
+        this.injectionStrategy.set(injectionStrategy != null ? injectionStrategy : InjectionStrategy.ADAPTIVE);
     }
 
     @Override

@@ -5,6 +5,7 @@ import dtm.di.annotations.aop.Aspect;
 import dtm.di.annotations.aop.DisableAop;
 import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
+import dtm.di.core.InjectionStrategy;
 import dtm.di.exceptions.*;
 import dtm.di.prototypes.CompositeDependency;
 import dtm.di.prototypes.Dependency;
@@ -50,6 +51,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private final ExecutorService mainExecutor;
     private final ExecutorService mainVirtualExecutor;
 
+    private final AtomicReference<InjectionStrategy> injectionStrategy;
+
     private final Map<Class<?>, List<Dependency>> dependencyContainer;
     private final ClassFinder classFinder;
     private final AtomicBoolean loaded;
@@ -67,7 +70,6 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private final Class<?> mainClass;
     private final List<String> profiles;
     private boolean childrenRegistration;
-    private boolean parallelInjection;
     private boolean aop;
     private final boolean processInlayer = true;
 
@@ -104,9 +106,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         this.loaded = new AtomicBoolean(false);
         this.classFinder = new ClassFinderService();
         this.childrenRegistration = false;
-        this.parallelInjection = true;
+        this.injectionStrategy = new AtomicReference<>(InjectionStrategy.ADAPTIVE);
         this.foldersToLoad = new ArrayList<>();
-        this.serviceBeensDefinition = new Vector<>();
+        this.serviceBeensDefinition = Collections.synchronizedList(new ArrayList<>());
         this.loadedSystemClasses = ConcurrentHashMap.newKeySet();
         this.serviceBeensDefinitionLayer = Collections.synchronizedList(new ArrayList<>());
         this.externalBeenBefore = new ConcurrentHashMap<>();
@@ -180,16 +182,6 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     @Override
-    public void enableParallelInjection() {
-        this.parallelInjection = true;
-    }
-
-    @Override
-    public void disableParallelInjection() {
-        this.parallelInjection = false;
-    }
-
-    @Override
     public void enableAOP() {
         this.aop = true;
     }
@@ -197,6 +189,11 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     @Override
     public void disableAOP() {
         this.aop = false;
+    }
+
+    @Override
+    public void setInjectionStrategy(InjectionStrategy injectionStrategy) {
+        this.injectionStrategy.set(injectionStrategy != null ? injectionStrategy : InjectionStrategy.ADAPTIVE);
     }
 
     @Override
@@ -213,6 +210,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             Object instance = dependencyObject.getDependency();
             return reference.cast(instance);
         }catch (Exception e){
+            log.error("Erro ao obter dependência: reference={}, qualifier={}, msg={}", reference.getName(), qualifier, e.getMessage(), e);
             return null;
         }
     }
@@ -226,10 +224,19 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
               try{
                   return reference.cast(d.getDependency());
               } catch (Exception e) {
+                  log.error(
+                          "Falha ao converter dependência. reference={}, dependencyClass={}, msg={}",
+                          reference.getName(),
+                          d.getDependency() != null ? d.getDependency().getClass().getName() : "null",
+                          e.getMessage(),
+                          e
+                  );
                   return null;
               }
             }).filter(Objects::nonNull).collect(Collectors.toList());
         }catch (Exception e){
+            log.error("Erro ao obter lista de dependências para reference={}, msg={}",
+                    reference.getName(), e.getMessage(), e);
             return null;
         }
     }
@@ -291,21 +298,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
         List<Field> listOfRegistration = getAllFieldWithAnnotation(clazz, Inject.class);
 
-        if(parallelInjection){
-            final List<CompletableFuture<?>> tasks = new ArrayList<>();
-            ExecutorService executorService = (listOfRegistration.size() > 10) ? mainExecutor : mainVirtualExecutor;
-            for (Field variable : listOfRegistration) {
-                CompletableFuture<?> task = CompletableFuture.runAsync(() -> {
-                    injectVariable(variable, instance);
-                }, executorService);
-                tasks.add(task);
-            }
-
-            CompletableFuture.allOf(tasks.toArray(CompletableFuture[]::new)).join();
+        if(isParallelInjection(listOfRegistration.size())){
+            injectDependenciesParallel(instance, listOfRegistration);
         }else{
-            for (Field variable : listOfRegistration) {
-                injectVariable(variable, instance);
-            }
+            injectDependenciesSequential(instance, listOfRegistration);
         }
     }
 
@@ -381,19 +377,28 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 } catch (InvalidClassRegistrationException e) {
                     throw new RuntimeException(e);
                 }
-            });
+            }, mainExecutor);
             tasks.add(task);
         }
 
         try {
-            CompletableFuture.allOf(tasks.toArray(new CompletableFuture[0])).join();
-        }catch (RuntimeException e){
-            Throwable cause = e.getCause();
-            if (cause instanceof InvalidClassRegistrationException) {
-                throw (InvalidClassRegistrationException) cause;
+            CompletableFuture.allOf(tasks.toArray(CompletableFuture[]::new)).get();
+        }catch (Exception e){
+            if (e instanceof InvalidClassRegistrationException invalidClassRegistrationException) {
+                throw invalidClassRegistrationException;
             } else {
-                throw e;
+                if(e instanceof RuntimeException runtimeException){
+                    Throwable cause = runtimeException.getCause();
+                    if (cause instanceof InvalidClassRegistrationException invalidClassRegistrationException) {
+                        throw invalidClassRegistrationException;
+                    }
+
+                    throw new DependencyInjectionException((cause != null) ? cause : runtimeException);
+                }
+
+                throw new DependencyInjectionException(e);
             }
+
         }
     }
 
@@ -1371,4 +1376,35 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         return layers;
 
     }
+
+    private boolean isParallelInjection(int injectionSize){
+        return (injectionStrategy.get() == InjectionStrategy.ADAPTIVE)
+                ? injectionSize > 10
+                : InjectionStrategy.PARALLEL == injectionStrategy.get();
+    }
+
+    private void injectDependenciesParallel(Object instance, List<Field> listOfRegistration){
+        try{
+            final List<CompletableFuture<?>> tasks = new ArrayList<>();
+            ExecutorService executorService = (listOfRegistration.size() > 10) ? mainExecutor : mainVirtualExecutor;
+            for (Field variable : listOfRegistration) {
+                CompletableFuture<?> task = CompletableFuture.runAsync(() -> {
+                    injectVariable(variable, instance);
+                }, executorService);
+                tasks.add(task);
+            }
+
+            CompletableFuture.allOf(tasks.toArray(CompletableFuture[]::new)).get();
+        } catch (Exception e) {
+            log.error("Falha geral na injeção paralela para a instância {}",
+                    instance.getClass().getName(), e);
+        }
+    }
+
+    private void injectDependenciesSequential(Object instance, List<Field> listOfRegistration){
+        for (Field variable : listOfRegistration) {
+            injectVariable(variable, instance);
+        }
+    }
+
 }

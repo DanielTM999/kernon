@@ -283,7 +283,6 @@ public class ManagedApplicationStartup {
             CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
                 try {
                     logLifecycle("CONTAINER_LOAD", true);
-                    dependencyContainer.enableParallelInjection();
                     if(aopEnable) dependencyContainer.enableAOP();
                     dependencyContainer.load();
                     defineControllerAdviceAsync();
