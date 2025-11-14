@@ -442,6 +442,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             dependencyContainer.put(dependency, listOfDependency);
             registerSubTypes(dependency, listOfDependency);
         }catch (Exception e) {
+            log.error("Falha ao registrar a dependência: {}", dependency.getName(), e);
             throw new InvalidClassRegistrationException(
                     "Erro ao criar a dependencia: " + dependency+ " ==> causa: "+e.getMessage(),
                     dependency,
@@ -830,7 +831,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             executePostCreationMethod(clazz, object);
             return object;
         }catch (Exception e) {
-            String message = "Erro ao criar Objeto "+clazz+" ==> cause: "+e.getMessage();
+            log.error("Erro ao criar instância para a classe: {}", clazz.getName(), e);
+            String message = "Erro ao criar instância "+clazz+" ==> cause: "+e.getMessage();
             throw new NewInstanceException(message, clazz);
         }
     }
@@ -976,7 +978,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                         try{
                             return getObjectToInjectVariable(variable, clazzVariable, instance);
                         }catch (Exception e){
-                            log.error("Erro ao carregar LAZY da variável {}. Causa: {}", variable.getName(), e.getMessage(), e);
+                            String instanceClassName = (instance != null) ? instance.getClass().getName() : "[instancia nula]";
+                            log.error("Erro ao carregar LAZY da variável {} na classe {}. Causa: {}", variable.getName(), instanceClassName, e.getMessage(), e);
                             return null;
                         }
                     };
@@ -998,7 +1001,13 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             }
 
         }catch (Exception e){
-            log.error("Erro ao injetar dependência na variável {}. Causa: {}", variable.getName(), e.getMessage(), e);
+            String instanceClassName = (instance != null) ? instance.getClass().getName() : "[instancia nula]";
+            log.error("Erro ao injetar variável '{}' na classe '{}'. Causa: {}",
+                    variable.getName(),
+                    instanceClassName,
+                    e.getMessage(),
+                    e
+            );
         }
     }
 
