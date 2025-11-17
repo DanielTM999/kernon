@@ -65,7 +65,7 @@ public class ClassFinderConfigurationsStorage implements ClassFinderConfiguratio
                 false,
                 packages,
                 jars,
-                (err) -> {},
+                null,
                 null
         );
     }
