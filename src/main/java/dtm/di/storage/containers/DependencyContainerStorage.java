@@ -782,7 +782,6 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                             args[i] = getDependency(clazz);
                         }catch (Exception e){
                             args[i] = null;
-                            e.printStackTrace();
                         }
                     }
                 }else{
@@ -868,7 +867,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             throw new NewInstanceException(message, clazz);
         }catch (Exception e) {
             String message = "Erro ao criar Objeto "+clazz+" ==> cause: "+e.getMessage();
-            throw new NewInstanceException(message, clazz);
+            throw new NewInstanceException(message, clazz, e);
         }
     }
 
@@ -1040,6 +1039,13 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     try{
                         return clazzVariable.cast(d.getDependency());
                     } catch (Exception e) {
+                        log.error(
+                                "Falha ao converter dependência. Esperado: {}, Obtido: {}, Erro: {}",
+                                clazzVariable.getName(),
+                                (d.getDependency() != null ? d.getDependency().getClass().getName() : "null"),
+                                e.getMessage(),
+                                e
+                        );
                         return null;
                     }
                 }).filter(Objects::nonNull).collect(Collectors.toList());
