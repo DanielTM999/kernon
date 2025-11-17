@@ -2,12 +2,14 @@ package dtm.di.storage;
 
 import dtm.discovery.core.ClassFinderConfigurations;
 import dtm.discovery.core.ClassFinderErrorHandler;
+import lombok.extern.slf4j.Slf4j;
 
 import java.lang.annotation.Annotation;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+@Slf4j
 public class ClassFinderConfigurationsStorage implements ClassFinderConfigurations {
 
     private final boolean allElements;
@@ -32,7 +34,9 @@ public class ClassFinderConfigurationsStorage implements ClassFinderConfiguratio
         this.ignoreSubJars = ignoreSubJars;
         this.ignorePackages = new ArrayList<>(ignorePackages);
         this.ignoreJarsTerms = new ArrayList<>(ignoreJarsTerms);
-        this.handler = handler != null ? handler : (err) -> {};
+        this.handler = handler != null ? handler : (err) -> {
+            log.error("Class Scanner Error", err);
+        };
         this.filterByAnnotation = filterByAnnotation;
     }
 
