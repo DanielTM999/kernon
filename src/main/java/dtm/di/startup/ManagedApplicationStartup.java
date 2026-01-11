@@ -291,7 +291,7 @@ public class ManagedApplicationStartup {
                 logError("Erro ao carregar DependencyContainer: {}", e.getMessage(), e);
                 throw new RuntimeException(e);
             }
-        }, executor).whenCompleteAsync((res, ex) -> {
+        }, executor).whenComplete((res, ex) -> {
             try {
                 if (ex != null) {
                     Throwable rootCause = getRootCause(ex);
@@ -318,9 +318,9 @@ public class ManagedApplicationStartup {
 
             if (exception.get() != null) {
                 Throwable t = exception.get();
-                executor.shutdownNow();
-                throw new InvalidBootException("Erro durante boot da aplicação", t);
+                exceptionHandlerAction(Thread.currentThread(), new InvalidBootException("Erro durante boot da aplicação", t));
             }
+
         });
     }
 
@@ -548,7 +548,6 @@ public class ManagedApplicationStartup {
 
                     logInfo("Um erro foi detectado durante o processo da aplicação. Encaminhando a exceção para o manipulador definido em @OnApplicationFail: {}", throwableMethod.getName());
                     throwableMethod.invoke(null, args);
-                    handlerInvoker.invoke(thread, throwable);
                 }catch (Exception e){
                     logError("Falha ao executar o handler @OnApplicationFail '{}'. Encaminhando para handler padrão.", throwableMethod.getName(), e);
                     uncaughtExceptionHandler.uncaughtException(thread, throwable);
