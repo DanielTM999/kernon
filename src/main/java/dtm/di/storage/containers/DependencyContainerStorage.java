@@ -100,8 +100,20 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
 
     private DependencyContainerStorage(Class<?> mainClass, String... profiles){
-        this.mainExecutor = Executors.newFixedThreadPool(Math.max(4, Runtime.getRuntime().availableProcessors()));
-        this.mainVirtualExecutor = Executors.newVirtualThreadPerTaskExecutor();
+        ThreadFactory vFactory = Thread.ofVirtual()
+                .name("MainVirtual-", 0)
+                .factory();
+
+        this.mainExecutor = Executors.newFixedThreadPool(
+                Math.max(4, Runtime.getRuntime().availableProcessors()),
+                runnable -> {
+                    Thread t = new Thread(runnable);
+                    t.setName("MainExecutor-Worker-" + t.hashCode());
+                    t.setDaemon(true);
+                    return t;
+                }
+        );
+        this.mainVirtualExecutor = Executors.newThreadPerTaskExecutor(vFactory);
         this.dependencyContainer = new ConcurrentHashMap<>();
         this.loaded = new AtomicBoolean(false);
         this.classFinder = new ClassFinderService();

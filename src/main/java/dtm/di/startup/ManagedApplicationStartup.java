@@ -313,10 +313,12 @@ public class ManagedApplicationStartup {
             }finally {
                 invokeHooks(LifecycleHook.Event.AFTER_ALL);
                 logLifecycle("BOOT_COMPLETE", false);
+                executor.shutdown();
             }
-            executor.shutdown();
+
             if (exception.get() != null) {
                 Throwable t = exception.get();
+                executor.shutdownNow();
                 throw new InvalidBootException("Erro durante boot da aplicação", t);
             }
         });
