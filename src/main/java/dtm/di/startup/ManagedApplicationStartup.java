@@ -272,6 +272,7 @@ public class ManagedApplicationStartup {
     private static void runAsync(){
         ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable);
+            thread.setDaemon(false);
             thread.setName("BootThread");
             return thread;
         });
@@ -279,49 +280,46 @@ public class ManagedApplicationStartup {
         logLifecycle("BOOT_START", true);
         invokeHooks(LifecycleHook.Event.BEFORE_ALL);
         DependencyContainer dependencyContainer = getCurrentDependencyContainer();
-        try(executor){
-            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                try {
-                    logLifecycle("CONTAINER_LOAD", true);
-                    if(aopEnable) dependencyContainer.enableAOP();
-                    dependencyContainer.load();
-                    defineControllerAdviceAsync();
-                    logLifecycle("CONTAINER_LOAD", false);
-                } catch (InvalidClassRegistrationException e) {
-                    logError("Erro ao carregar DependencyContainer: {}", e.getMessage(), e);
-                    exception.set(e);
-                }
-            }, executor).whenComplete((res, ex) -> {
+        CompletableFuture.runAsync(() -> {
+            try {
+                logLifecycle("CONTAINER_LOAD", true);
+                if(aopEnable) dependencyContainer.enableAOP();
+                dependencyContainer.load();
+                defineControllerAdviceAsync();
+                logLifecycle("CONTAINER_LOAD", false);
+            } catch (Exception e) {
+                logError("Erro ao carregar DependencyContainer: {}", e.getMessage(), e);
+                throw new RuntimeException(e);
+            }
+        }, executor).whenCompleteAsync((res, ex) -> {
+            try {
                 if (ex != null) {
                     Throwable rootCause = getRootCause(ex);
                     exception.set(rootCause);
                     logError("Erro durante carregamento assíncrono: {}", rootCause.getMessage(), rootCause);
-                    return;
-                }
-                defineExceptionHandler(true);
-                invokeHooks(LifecycleHook.Event.AFTER_CONTAINER_LOAD);
-                try {
+                }else{
+                    defineExceptionHandler(true);
+                    invokeHooks(LifecycleHook.Event.AFTER_CONTAINER_LOAD);
                     logLifecycle("STARTUP_METHOD", true);
                     runSchedulerAsync();
                     runStarterMethod();
                     logLifecycle("STARTUP_METHOD", false);
-                } catch (Exception e) {
-                    Throwable rootCause = getRootCause(e);
-                    exception.set(rootCause);
-                    logError("Erro ao executar método @OnBoot: {}", rootCause.getMessage(), rootCause);
+                    invokeHooks(LifecycleHook.Event.AFTER_STARTUP_METHOD);
                 }
-                invokeHooks(LifecycleHook.Event.AFTER_STARTUP_METHOD);
-            });
-
-            future.join();
-        }
-        invokeHooks(LifecycleHook.Event.AFTER_ALL);
-        logLifecycle("BOOT_COMPLETE", false);
-        if (exception.get() != null) {
-            Throwable t = exception.get();
-            throw new InvalidBootException("Erro durante boot da aplicação", t);
-        }
-
+            } catch (Exception e) {
+                Throwable rootCause = getRootCause(e);
+                exception.set(rootCause);
+                logError("Erro ao executar método @OnBoot: {}", rootCause.getMessage(), rootCause);
+            }finally {
+                invokeHooks(LifecycleHook.Event.AFTER_ALL);
+                logLifecycle("BOOT_COMPLETE", false);
+            }
+            executor.shutdown();
+            if (exception.get() != null) {
+                Throwable t = exception.get();
+                throw new InvalidBootException("Erro durante boot da aplicação", t);
+            }
+        });
     }
 
     private static void runSchedulerAsync(){
