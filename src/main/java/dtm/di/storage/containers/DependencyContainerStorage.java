@@ -1239,7 +1239,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             try{
                 invokeMethod(method, instance);
             }catch (Exception e){
-                log.error("Erro ao executar metodo: {}:{} do PostCreation", method.getName(), clazz);
+                log.error("Erro ao executar metodo: {}:{} do PostCreation", method.getName(), clazz, e);
             }
         }
 
