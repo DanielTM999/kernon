@@ -13,10 +13,9 @@ import dtm.di.prototypes.LazyDependency;
 import dtm.di.prototypes.RegistrationFunction;
 import dtm.di.prototypes.proxy.ProxyFactory;
 import dtm.di.sort.TopologicalSorter;
-import dtm.di.storage.ClassFinderConfigurationsStorage;
-import dtm.di.storage.DependencyObject;
-import dtm.di.storage.ServiceBean;
-import dtm.di.storage.StaticContainer;
+import dtm.di.storage.*;
+import dtm.di.storage.bean.BeanDependencyGraphBuilder;
+import dtm.di.storage.bean.BeanGraph;
 import dtm.di.storage.composite.CompositeDependencyStorage;
 import dtm.di.storage.lazy.Lazy;
 import dtm.di.storage.lazy.ParamtrizedObject;
@@ -66,6 +65,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private final Map<Class<?>, List<Method>> externalBeenBefore;
     private final Map<Class<?>, List<Method>> externalBeenAfter;
+
+    private final int thresholdConcurent = 50;
 
     private final Class<?> mainClass;
     private final List<String> profiles;
@@ -123,8 +124,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         this.serviceBeensDefinition = Collections.synchronizedList(new ArrayList<>());
         this.loadedSystemClasses = ConcurrentHashMap.newKeySet();
         this.serviceBeensDefinitionLayer = Collections.synchronizedList(new ArrayList<>());
-        this.externalBeenBefore = new ConcurrentHashMap<>();
-        this.externalBeenAfter = new ConcurrentHashMap<>();
+        this.externalBeenBefore = new LinkedHashMap<>();
+        this.externalBeenAfter = new LinkedHashMap<>();
         this.classFinderConfigurations = getFindConfigurations();
         this.mainClass = mainClass;
         if(profiles.length > 0){
@@ -218,7 +219,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         throwIfUnload();
         try{
             final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(reference, Collections.emptyList());
-            final Dependency dependencyObject = listOfDependency.stream().filter(d -> d.getQualifier().equals(qualifier)).findFirst().orElseThrow();
+            final Dependency dependencyObject = listOfDependency.stream().filter(d -> d.getQualifier().equals(qualifier)).findFirst().orElseThrow(() -> {
+                return new DependencyInjectionException("Erro ao obter dependência: reference="+reference+", qualifier="+qualifier);
+            });
             Object instance = dependencyObject.getDependency();
             return reference.cast(instance);
         }catch (Exception e){
@@ -503,14 +506,13 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private void filterServiceClass(){
-        final int threshold = 50;
         final Set<Class<?>> serviceLoadedClassActive = getConcreteServiceLoadedClass(Component.class);
 
         final int total = serviceLoadedClassActive.size();
 
         final Map<Class<?>, Set<Class<?>>> dependencyGraph = new ConcurrentHashMap<>();
 
-        if (total < threshold) {
+        if (total < thresholdConcurent) {
             processDependencyServiceWithParallelStream(dependencyGraph, serviceLoadedClassActive);
         } else {
             processDependencyServiceWithExecutorService(dependencyGraph, serviceLoadedClassActive);
@@ -722,35 +724,27 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private void filterExternalsBeens() throws InvalidClassRegistrationException{
-        Set<Class<?>> externalBeen = getConcreteServiceLoadedClass(Configuration.class);
-        final Map<Class<?>, Set<Class<?>>> dependencyGraph = new ConcurrentHashMap<>();
-        Set<Class<?>> ordered = TopologicalSorter.sort(externalBeen, dependencyGraph);
-        for(Class<?> clazz : ordered){
-            long count = getDependencyCount(clazz);
+        Set<Class<?>> configClasses = getConcreteServiceLoadedClass(Configuration.class);
 
-            if(count > 1){
-                this.externalBeenAfter.put(clazz, getMethodsListToBeen(clazz, false));
-            }else{
-                this.externalBeenBefore.put(clazz, getMethodsListToBeen(clazz, true));
-            }
+        if (configClasses.isEmpty()) {
+            return;
         }
+        Set<Class<?>> serviceClasses = getConcreteServiceLoadedClass(Component.class, false);
+        BeanDependencyGraphBuilder builder = new BeanDependencyGraphBuilder(serviceClasses);
+        BeanGraph beanGraph = builder.buildGraph(configClasses);
+
+        Map<Class<?>, List<Method>> beforeBeans = beanGraph.getBeforeServiceBeans(serviceClasses);
+
+        Map<Class<?>, List<Method>> afterBeans = beanGraph.getAfterServiceBeans(serviceClasses);
+
+        this.externalBeenBefore.clear();
+        this.externalBeenBefore.putAll(beforeBeans);
+
+        this.externalBeenAfter.clear();
+        this.externalBeenAfter.putAll(afterBeans);
     }
 
-    private long getDependencyCount(Class<?> clazz){
 
-        long fieldInjectionCount = Arrays
-                .stream(clazz.getDeclaredFields())
-                .filter(field -> field.isAnnotationPresent(Inject.class))
-                .count();
-
-        int constructorArgCount = Arrays
-                .stream(clazz.getDeclaredConstructors())
-                .mapToInt(Constructor::getParameterCount)
-                .max()
-                .orElse(0);
-
-        return fieldInjectionCount + constructorArgCount;
-    }
 
     private void selfInjection() throws InvalidClassRegistrationException{
         registerObject(this);
@@ -767,17 +761,6 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
     }
 
-    private List<Method> getMethodsListToBeen(Class<?> configurationsClass, boolean order){
-        return Arrays.stream(configurationsClass.getDeclaredMethods())
-                .filter(method -> {
-                    if(method.getReturnType().equals(Void.class)){
-                        return false;
-                    }
-                    return hasMetaAnnotation(method, Component.class) && !method.isSynthetic();
-                })
-                .sorted(Comparator.comparingInt(Method::getParameterCount))
-                .toList();
-    }
 
     private void registerExternalBeen(Class<?> configurationsClass, List<Method> methodsList, boolean load) throws InvalidClassRegistrationException{
         try {
@@ -1375,33 +1358,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         return aop;
     }
 
-    private List<Set<Class<?>>> groupByDependencyLayer(
-            Set<Class<?>> serviceLoadedClass,
-            Map<Class<?>, Set<Class<?>>> dependencyGraph) {
-
-        List<Set<Class<?>>> layers = new ArrayList<>();
-        Set<Class<?>> processed = new HashSet<>();
-
-
-        Set<Class<?>> currentLayer = serviceLoadedClass.stream()
-                .filter(c -> dependencyGraph.getOrDefault(c, Set.of()).isEmpty())
-                .collect(Collectors.toSet());
-
-        while (!currentLayer.isEmpty()) {
-            layers.add(currentLayer);
-            processed.addAll(currentLayer);
-
-            currentLayer = serviceLoadedClass.stream()
-                    .filter(c -> !processed.contains(c))
-                    .filter(c -> {
-                        Set<Class<?>> deps = dependencyGraph.getOrDefault(c, Set.of());
-                        return processed.containsAll(deps);
-                    })
-                    .collect(Collectors.toSet());
-        }
-
-        return layers;
-
+    private List<Set<Class<?>>> groupByDependencyLayer(Set<Class<?>> serviceLoadedClass, Map<Class<?>, Set<Class<?>>> dependencyGraph) {
+        DependencyLayerResolver dependencyLayerResolver = new DependencyLayerResolver(serviceLoadedClass, dependencyGraph);
+        return dependencyLayerResolver.resolveLayers();
     }
 
     private boolean isParallelInjection(int injectionSize){
