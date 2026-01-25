@@ -219,6 +219,11 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
     }
 
     @Override
+    public boolean isAopEnabled() {
+        return aop;
+    }
+
+    @Override
     public void enableAOP() {
         this.aop = true;
     }

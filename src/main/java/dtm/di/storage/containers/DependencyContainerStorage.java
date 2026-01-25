@@ -205,6 +205,11 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     @Override
+    public boolean isAopEnabled() {
+        return aop;
+    }
+
+    @Override
     public void setInjectionStrategy(InjectionStrategy injectionStrategy) {
         this.injectionStrategy.set(injectionStrategy != null ? injectionStrategy : InjectionStrategy.ADAPTIVE);
     }

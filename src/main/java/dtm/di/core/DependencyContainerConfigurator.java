@@ -32,6 +32,11 @@ public interface DependencyContainerConfigurator {
     void disableAOP();
 
     /**
+     * verifica se á suporte a Aspect-Oriented Programming (AOP).
+     */
+    boolean isAopEnabled();
+
+    /**
      * Define a estratégia de injeção de dependências utilizada pelo contêiner.
      *
      * A estratégia controla como o contêiner executa o processo de injeção:
