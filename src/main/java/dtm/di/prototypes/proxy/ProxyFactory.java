@@ -68,7 +68,7 @@ public class ProxyFactory {
                     .make()) {
 
                 return unloaded
-                        .load(cls.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
+                        .load(ProxyObject.class.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
                         .getLoaded();
 
             } catch (Exception e) {

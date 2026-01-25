@@ -3,6 +3,7 @@ package dtm.di.prototypes.proxy;
 import dtm.di.aop.AopProxyUtils;
 import dtm.di.core.DependencyContainer;
 import dtm.di.core.aop.AopUtils;
+import dtm.di.exceptions.AopMainMethodException;
 import net.bytebuddy.implementation.bind.annotation.*;
 
 import java.lang.reflect.InvocationTargetException;
@@ -30,23 +31,20 @@ public class ObjectInterceptor {
 
         aopUtils.applyBefore(realMethod, args, proxy, delegate);
         try {
-            Object result = realMethod.invoke(delegate, args);
+            Object result;
+            try{
+                result = realMethod.invoke(delegate, args);
+            }catch (IllegalAccessException | InvocationTargetException reflectiveOperationException){
+                throw new AopMainMethodException("Erro ao invocar main AOP Method", reflectiveOperationException);
+            }
             return aopUtils.applyAfter(realMethod, args, proxy, delegate, result);
-        }catch (InvocationTargetException invocationTargetException){
-            Throwable cause = invocationTargetException.getCause();
-            if (cause == null) {
-                cause = invocationTargetException.getTargetException();
-            }
-            while (cause instanceof InvocationTargetException && cause.getCause() != null) {
-                cause = cause.getCause();
-            }
+        }catch (AopMainMethodException aopMainMethodException){
+            Throwable cause = extractRootError(aopMainMethodException.getCause());
+            executeOnErrorOrThrow(aopUtils, cause, realMethod, args, proxy, delegate);
             throw cause;
         }catch (RuntimeException runtimeException){
             Throwable cause = runtimeException.getCause();
-            while (cause instanceof InvocationTargetException && cause.getCause() != null) {
-                cause = cause.getCause();
-            }
-            throw cause;
+            throw extractRootError(cause);
         }
 
     }
@@ -62,6 +60,31 @@ public class ObjectInterceptor {
                 return proxyMethod;
             }
         }
+    }
+
+    private void executeOnErrorOrThrow(
+            final AopUtils aopUtils,
+            Throwable cause,
+            final Method realMethod,
+            final Object[] args,
+            final Object proxy,
+            final Object delegate
+    ) throws Throwable{
+        try{
+            aopUtils.applyOnErrorMethod(realMethod, args, proxy, delegate, cause);
+        }catch (RuntimeException runtimeException){
+            Throwable error = runtimeException.getCause();
+            throw extractRootError(error);
+        }
+    }
+
+    private Throwable extractRootError(Throwable baseError){
+        Throwable current = baseError;
+        while (current instanceof InvocationTargetException ite && ite.getTargetException() != null) {
+            current = ite.getTargetException();
+        }
+
+        return current;
     }
 
 }

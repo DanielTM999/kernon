@@ -14,9 +14,10 @@ import java.lang.reflect.Method;
  * Implementações dessa classe lidam diretamente com o ciclo de vida dos aspectos, resolvendo
  * chamadas aos métodos {@code Pointcut}, {@code BeforeExecution} e {@code AfterExecution}.
  * <p>
- * ✔️ Essa classe existe para desacoplar a definição de interceptadores da implementação do mecanismo AOP.
+ *  Essa classe existe para desacoplar a definição de interceptadores da implementação do mecanismo AOP.
  */
 public abstract class AopUtils {
     public abstract void applyBefore(Method method, Object[] args, Object proxy, Object realIntance);
     public abstract Object applyAfter(Method method, Object[] args, Object proxy, Object realIntance, Object currentResult);
+    public abstract void applyOnErrorMethod(Method method, Object[] args, Object proxy, Object realIntance, Throwable cause);
 }

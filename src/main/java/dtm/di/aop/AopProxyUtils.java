@@ -24,10 +24,10 @@ import java.util.stream.Collectors;
  * {@link dtm.di.annotations.aop.Aspect}, {@link dtm.di.annotations.aop.Pointcut},
  * {@link dtm.di.annotations.aop.BeforeExecution} e {@link dtm.di.annotations.aop.AfterExecution}.
  * <p>
- * ✔️ Isso existe única e exclusivamente para ser o serviço interno de AOP do framework, garantindo que a
+ *  Isso existe única e exclusivamente para ser o serviço interno de AOP do framework, garantindo que a
  * interceptação e execução dos aspectos aconteça corretamente.
  * <p>
- * ❗ O usuário final não interage com essa classe e, em teoria, nem precisa saber que ela existe.
+ * O usuário final não interage com essa classe e, em teoria, nem precisa saber que ela existe.
  */
 public class AopProxyUtils extends AopUtils {
     private static volatile AopProxyUtils aopProxyUtils;
@@ -117,6 +117,7 @@ public class AopProxyUtils extends AopUtils {
                         result = newResult;
                     }
                 } catch (Exception e) {
+
                     String className = (handler.instance != null) ? handler.instance.getClass().toString() : method.getName();
                     throw new RuntimeException("Erro no método @AfterExecution: "+className, e);
                 }
@@ -124,6 +125,36 @@ public class AopProxyUtils extends AopUtils {
         }
 
         return result;
+    }
+
+
+    @Override
+    public void applyOnErrorMethod(Method method, Object[] args, Object proxy, Object realInstance, Throwable cause) {
+        for (AspectHandler handler : handlers) {
+            boolean apply = shouldApplyHandler(handler, method, args, proxy, realInstance);
+
+            if(!apply) continue;
+            Method error = handler.error;
+            if(error != null){
+                try {
+                    executeMethod(
+                            handler.instance,
+                            error,
+                            method,
+                            args,
+                            proxy,
+                            realInstance,
+                            null,
+                            cause
+                    );
+                }catch (RuntimeException re){
+                    throw re;
+                } catch (Exception e) {
+                    String className = (handler.instance != null) ?  handler.instance.getClass().toString() : method.getName();
+                    throw new RuntimeException("Erro no método @AfterExecution: "+className, e);
+                }
+            }
+        }
     }
 
     /**
@@ -142,7 +173,7 @@ public class AopProxyUtils extends AopUtils {
         for (Class<?> clazz : aspects){
             try{
                 Object instance = dependencyContainer.newInstance(clazz);
-                Method pointcut = null, before = null, after = null;
+                Method pointcut = null, before = null, after = null, error = null;
                 for (Method method : clazz.getDeclaredMethods()) {
                     if (method.isAnnotationPresent(Pointcut.class))
                         pointcut = method;
@@ -150,9 +181,11 @@ public class AopProxyUtils extends AopUtils {
                         before = method;
                     else if (method.isAnnotationPresent(AfterExecution.class))
                         after = method;
+                    else if(method.isAnnotationPresent(AfterException.class))
+                        error = method;
                 }
 
-                handlers.add(new AspectHandler(instance, pointcut, before, after));
+                handlers.add(new AspectHandler(instance, pointcut, before, after, error));
             }catch (Exception e){
                 throw new AspectNewInstanceException(e.getMessage(), clazz, e);
             }
@@ -204,7 +237,7 @@ public class AopProxyUtils extends AopUtils {
             Object proxy,
             Object realInstance
     ) throws Exception{
-        return executeMethod(instance, methodExecute, methodArgs, args, proxy, realInstance, null);
+        return executeMethod(instance, methodExecute, methodArgs, args, proxy, realInstance, null, null);
     }
 
     /**
@@ -233,6 +266,39 @@ public class AopProxyUtils extends AopUtils {
             Object proxy,
             Object realInstance,
             Object currentResult
+    ) throws Exception {
+        return executeMethod(instance, methodExecute, methodArgs, args, proxy, realInstance, currentResult, null);
+    }
+
+    /**
+     * Executa um método do aspecto, resolvendo automaticamente os parâmetros anotados com:
+     * <ul>
+     *     <li>{@link ProxyInstance} → injeta o proxy da classe alvo</li>
+     *     <li>{@link ResultProxy} → injeta o resultado atual da execução do método alvo (somente em {@code after})</li>
+     *     <li>{@code Method} → injeta a referência do método alvo interceptado</li>
+     *     <li>{@code Object[]} → injeta os argumentos do método interceptado</li>
+     *     <li>{@code Throwable} → injeta o erro do método interceptado</li>
+     * </ul>
+     *
+     * @param instance Instância da classe do aspecto.
+     * @param methodExecute Método a ser executado.
+     * @param methodArgs Referência do método alvo interceptado.
+     * @param args Argumentos do método alvo interceptado.
+     * @param proxy Proxy da instância alvo.
+     * @param currentResult Resultado atual do método alvo (somente em {@code after}).
+     * @param cause Exception lancada pelo metodo.
+     * @return Resultado da execução do método do aspecto.
+     * @throws Exception Caso ocorra algum erro na invocação do método.
+     */
+    private Object executeMethod(
+            Object instance,
+            Method methodExecute,
+            Method methodArgs,
+            Object[] args,
+            Object proxy,
+            Object realInstance,
+            Object currentResult,
+            Throwable cause
     ) throws Exception{
         methodExecute.setAccessible(true);
         Parameter[] parameters = methodExecute.getParameters();
@@ -252,7 +318,9 @@ public class AopProxyUtils extends AopUtils {
                 invokeArgs[i] = methodArgs;
             } else if (paramType.isArray() && paramType.getComponentType().equals(Object.class)) {
                 invokeArgs[i] = args;
-            } else {
+            }else if(Throwable.class.isAssignableFrom(paramType)){
+                invokeArgs[i] = cause;
+            }else {
                 invokeArgs[i] = null;
             }
         }
@@ -274,7 +342,7 @@ public class AopProxyUtils extends AopUtils {
      * @param before Método anotado com {@link BeforeExecution}.
      * @param after Método anotado com {@link AfterExecution}.
      */
-    public record AspectHandler(Object instance, Method pointcut, Method before, Method after) {
+    public record AspectHandler(Object instance, Method pointcut, Method before, Method after, Method error) {
     }
 
     /**
