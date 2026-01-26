@@ -8,9 +8,11 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 
-public final class AnotationsUtils {
+public final class AnnotationsUtils {
 
-    private AnotationsUtils(){}
+    private AnnotationsUtils(){
+        throw new IllegalStateException("utility class");
+    }
 
     /**
      * Retorna todos os campos da classe (incluindo superclasses) que possuem a anotação especificada.
@@ -128,6 +130,36 @@ public final class AnotationsUtils {
         return false;
     }
 
+
+    /**
+     * Obtém uma instância de uma anotação presente na classe, seja diretamente ou via meta-anotação.
+     *
+     * @param targetClass     A classe onde a anotação será buscada.
+     * @param baseAnnotation  A classe da anotação desejada.
+     * @param <A>             O tipo da anotação.
+     * @return A instância da anotação encontrada ou {@code null} se não existir.
+     */
+    public static <A extends Annotation> A getMetaAnnotation(Class<?> targetClass, Class<A> baseAnnotation){
+        Objects.requireNonNull(targetClass, "targetClass não pode ser null");
+        Objects.requireNonNull(baseAnnotation, "baseAnnotation não pode ser null");
+
+        if(targetClass.isAnnotationPresent(baseAnnotation)){
+            return targetClass.getAnnotation(baseAnnotation);
+        }
+        Set<Class<? extends Annotation>> visiting = new HashSet<>();
+        for (Annotation annotation : targetClass.getAnnotations()) {
+            A found = findMetaAnnotation(annotation.annotationType(), baseAnnotation, visiting);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+
+
+
+
     /**
      * Método auxiliar recursivo que verifica se uma anotação é uma meta-anotação da anotação base desejada.
      * Utiliza um conjunto para rastrear anotações já visitadas e evitar loops infinitos.
@@ -157,5 +189,39 @@ public final class AnotationsUtils {
 
         return false;
     }
+
+
+    /**
+     * Método auxiliar recursivo para encontrar a instância da anotação dentro de uma hierarquia de anotações.
+     *
+     * @param currentAnnotationType O tipo da anotação atual sendo inspecionada.
+     * @param baseAnnotation        A anotação alvo que queremos encontrar.
+     * @param visited               Conjunto de anotações já visitadas para evitar ciclos infinitos.
+     * @return A instância da anotação se encontrada, ou null.
+     */
+    private static <A extends Annotation> A findMetaAnnotation(Class<? extends Annotation> currentAnnotationType, Class<A> baseAnnotation, Set<Class<? extends Annotation>> visited) {
+        if (!visited.add(currentAnnotationType)) {
+            return null;
+        }
+
+        if (currentAnnotationType.getName().startsWith("java.lang.annotation")) {
+            return null;
+        }
+
+        if (currentAnnotationType.isAnnotationPresent(baseAnnotation)) {
+            return currentAnnotationType.getAnnotation(baseAnnotation);
+        }
+
+        for (Annotation metaAnnotation : currentAnnotationType.getAnnotations()) {
+            A found = findMetaAnnotation(metaAnnotation.annotationType(), baseAnnotation, visited);
+            if (found != null) {
+                return found;
+            }
+        }
+
+        return null;
+    }
+
+
 
 }

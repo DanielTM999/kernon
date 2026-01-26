@@ -4,7 +4,7 @@ import dtm.di.annotations.BeanDefinition;
 import dtm.di.annotations.Component;
 import dtm.di.annotations.Inject;
 import dtm.di.annotations.aop.DisableAop;
-import dtm.di.common.AnotationsUtils;
+import dtm.di.common.AnnotationsUtils;
 import lombok.extern.slf4j.Slf4j;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -189,7 +189,7 @@ public class BeanDependencyGraphBuilder {
     }
 
     private boolean isBeanMethod(Method method) {
-        return AnotationsUtils.hasMetaAnnotation(method, Component.class);
+        return AnnotationsUtils.hasMetaAnnotation(method, Component.class);
     }
 
     private boolean isSingletonBean(Method method) {

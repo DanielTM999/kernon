@@ -3,6 +3,7 @@ package dtm.di.storage.containers;
 import dtm.di.annotations.*;
 import dtm.di.annotations.aop.Aspect;
 import dtm.di.annotations.aop.DisableAop;
+import dtm.di.common.AnnotationsUtils;
 import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
 import dtm.di.core.InjectionStrategy;
@@ -39,8 +40,8 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
-import static dtm.di.common.AnotationsUtils.hasMetaAnnotation;
-import static dtm.di.common.AnotationsUtils.getAllFieldWithAnnotation;
+import static dtm.di.common.AnnotationsUtils.hasMetaAnnotation;
+import static dtm.di.common.AnnotationsUtils.getAllFieldWithAnnotation;
 
 @DisableAop
 @Slf4j
@@ -106,7 +107,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 .factory();
 
         this.mainExecutor = Executors.newFixedThreadPool(
-                Math.max(4, Runtime.getRuntime().availableProcessors()),
+                Math.max(6, Runtime.getRuntime().availableProcessors()),
                 runnable -> {
                     Thread t = new Thread(runnable);
                     t.setName("MainExecutor-Worker-" + t.hashCode());
@@ -144,6 +145,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             if(isLoaded()) return;
             loadByPluginFolder();
             loadSystemClasses();
+            injectExternalModules();
             filterServiceClass();
             filterExternalsBeens();
             loaded.set(true);
@@ -1190,11 +1192,41 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private void loadSystemClasses(){
+        this.classFinderConfigurations = new ClassFinderConfigurations() {};
+        this.classFinderConfigurations.getIgnoreJarsTerms().addAll(
+                List.of(
+                    "lombok", "byte-buddy", "logback-classic", "slf4j-api", "classfinder"
+                )
+        );
+        this.classFinderConfigurations.getIgnorePackges().addAll(
+                List.of(
+                    "net.bytebuddy", "ch.qos.logback", "lombok"
+                )
+        );
         if(mainClass != null){
             loadedSystemClasses.addAll(classFinder.find(mainClass, classFinderConfigurations));
         }else{
             loadedSystemClasses.addAll(classFinder.find(classFinderConfigurations));
         }
+    }
+
+    private void injectExternalModules(){
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+
+        for (Class<?> clazz : loadedSystemClasses){
+            CompletableFuture<Void> task = CompletableFuture.runAsync(() -> {
+                Import importAnnotation = AnnotationsUtils.getMetaAnnotation(clazz, Import.class);
+                if(importAnnotation != null){
+                    Class<?>[] configs = importAnnotation.configs();
+                    if (configs.length > 0) {
+                        loadedSystemClasses.addAll(Arrays.asList(configs));
+                    }
+                }
+            }, mainExecutor);
+            futures.add(task);
+        }
+
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
     }
 
     private boolean filterConcreteBean(Class<?> clazz, Class<? extends Annotation> annotation){
