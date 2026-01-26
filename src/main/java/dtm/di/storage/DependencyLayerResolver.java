@@ -20,6 +20,10 @@ public class DependencyLayerResolver {
         Set<Class<?>> processed = new HashSet<>();
 
 
+        if(serviceLoadedClass.isEmpty()){
+            return layers;
+        }
+
         Set<Class<?>> currentLayer = findInitialLayer();
 
         if (currentLayer.isEmpty()) {
