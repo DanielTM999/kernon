@@ -16,7 +16,7 @@ import java.lang.annotation.*;
  * // O injetor irá ler a AppConfig e, consequentemente,
  * // colocará a DatabaseConfig e a SecurityConfig na fila de análise.
  * @Configuration
- * @Import(configs = {DatabaseConfig.class, SecurityConfig.class})
+ * @Import({DatabaseConfig.class, SecurityConfig.class})
  * public class AppConfig {
  * // ...
  * }
@@ -27,5 +27,5 @@ import java.lang.annotation.*;
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)
 public @interface Import {
-    Class<?>[] configs() default {};
+    Class<?>[] value() default {};
 }

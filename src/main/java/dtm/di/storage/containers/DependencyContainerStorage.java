@@ -1217,7 +1217,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             CompletableFuture<Void> task = CompletableFuture.runAsync(() -> {
                 Import importAnnotation = AnnotationsUtils.getMetaAnnotation(clazz, Import.class);
                 if(importAnnotation != null){
-                    Class<?>[] configs = importAnnotation.configs();
+                    Class<?>[] configs = importAnnotation.value();
                     if (configs.length > 0) {
                         loadedSystemClasses.addAll(Arrays.asList(configs));
                     }
