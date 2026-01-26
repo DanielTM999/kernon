@@ -975,7 +975,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                             return getObjectToInjectVariable(variable, clazzVariable, instance);
                         }catch (Exception e){
                             String instanceClassName = (instance != null) ? instance.getClass().getName() : "[instancia nula]";
-                            log.error("Erro ao carregar LAZY da variável {} na classe {}. Causa: {}", variable.getName(), instanceClassName, e.getMessage(), e);
+                            if(!variable.isAnnotationPresent(DisableInjectionWarn.class)){
+                                log.error("Erro ao carregar LAZY da variável {} na classe {}. Causa: {}", variable.getName(), instanceClassName, e.getMessage(), e);
+                            }
                             return null;
                         }
                     };
@@ -998,12 +1000,15 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
         }catch (Exception e){
             String instanceClassName = (instance != null) ? instance.getClass().getName() : "[instancia nula]";
-            log.error("Erro ao injetar variável '{}' na classe '{}'. Causa: {}",
-                    variable.getName(),
-                    instanceClassName,
-                    e.getMessage(),
-                    e
-            );
+
+            if(!variable.isAnnotationPresent(DisableInjectionWarn.class)){
+                log.error("Erro ao injetar variável '{}' na classe '{}'. Causa: {}",
+                        variable.getName(),
+                        instanceClassName,
+                        e.getMessage(),
+                        e
+                );
+            }
         }
     }
 
