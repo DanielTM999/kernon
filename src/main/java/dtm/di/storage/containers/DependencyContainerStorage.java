@@ -223,18 +223,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     @Override
     public <T> T getDependency(Class<T> reference, String qualifier) {
-        throwIfUnload();
-        try{
-            final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(reference, Collections.emptyList());
-            final Dependency dependencyObject = listOfDependency.stream().filter(d -> d.getQualifier().equals(qualifier)).findFirst().orElseThrow(() -> {
-                return new DependencyInjectionException("Erro ao obter dependência: reference="+reference+", qualifier="+qualifier);
-            });
-            Object instance = dependencyObject.getDependency();
-            return reference.cast(instance);
-        }catch (Exception e){
-            log.error("Erro ao obter dependência: reference={}, qualifier={}, msg={}", reference.getName(), qualifier, e.getMessage(), e);
-            return null;
-        }
+        return getDependency(reference, qualifier, () -> true);
     }
 
     @Override
@@ -781,7 +770,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     for(int i = 0; i < parameterTypes.length; i++){
                         final Class<?> clazz = parameterTypes[i];
                         try{
-                            args[i] = getDependency(clazz);
+                            args[i] = getDependency(clazz, () -> {
+                                return !method.isAnnotationPresent(DisableInjectionWarn.class);
+                            });
                         }catch (Exception e){
                             args[i] = null;
                         }
@@ -917,7 +908,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             final Class<?> clazzVariable = paramtrizedObject.getParamClass();
 
             if(paramtrizedObject.getBaseClass().equals(LazyDependency.class)){
-                return Lazy.of(() -> getDependency(clazzVariable));
+                return Lazy.of(() -> getDependency(clazzVariable, () -> {
+                    return !parameter.isAnnotationPresent(DisableInjectionWarn.class);
+                }));
             }else if(paramtrizedObject.getBaseClass().equals(CompositeDependency.class)){
                 return new CompositeDependencyStorage<>(getDependencyList(clazzVariable));
             }else if(paramtrizedObject.getBaseClass().equals(AtomicReference.class)){
@@ -930,7 +923,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 return null;
             }
         }else{
-            return getDependency(paramtrizedObject.getBaseClass());
+            return getDependency(paramtrizedObject.getBaseClass(), () -> {
+                return !parameter.isAnnotationPresent(DisableInjectionWarn.class);
+            });
         }
     }
 
@@ -1427,6 +1422,29 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private void injectDependenciesSequential(Object instance, List<Field> listOfRegistration){
         for (Field variable : listOfRegistration) {
             injectVariable(variable, instance);
+        }
+    }
+
+    private <T> T getDependency(Class<T> reference, Supplier<Boolean> showWarnIfError) {
+        return getDependency(reference, getQualifierName(reference), showWarnIfError);
+    }
+
+    private <T> T getDependency(Class<T> reference, String qualifier, Supplier<Boolean> showWarnIfError) {
+        throwIfUnload();
+        try{
+            final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(reference, Collections.emptyList());
+            final Dependency dependencyObject = listOfDependency.stream().filter(d -> d.getQualifier().equals(qualifier)).findFirst().orElseThrow(() -> {
+                return new DependencyInjectionException("Erro ao obter dependência: reference="+reference+", qualifier="+qualifier);
+            });
+            Object instance = dependencyObject.getDependency();
+            return reference.cast(instance);
+        }catch (Exception e){
+            if(showWarnIfError == null) showWarnIfError = () -> true;
+
+            Boolean showWarn = showWarnIfError.get();
+            if(Boolean.TRUE.equals(showWarn)) log.error("Erro ao obter dependência: reference={}, qualifier={}, msg={}", reference.getName(), qualifier, e.getMessage(), e);
+
+            return null;
         }
     }
 
