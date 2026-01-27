@@ -798,16 +798,15 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             Object configurationInstance = newInstance(configurationsClass, false);
             for (Method method : methodsList) {
                 Object result = null;
-                Class<?>[] parameterTypes = method.getParameterTypes();
-                Object[] args = new Object[parameterTypes.length];
+
+                Parameter[] parameters = method.getParameters();
+                Object[] args = new Object[parameters.length];
 
                 if(load){
-                    for(int i = 0; i < parameterTypes.length; i++){
-                        final Class<?> clazz = parameterTypes[i];
+                    for(int i = 0; i < parameters.length; i++){
+                        final Parameter parameter = parameters[i];
                         try{
-                            args[i] = getDependency(clazz, () -> {
-                                return !method.isAnnotationPresent(DisableInjectionWarn.class);
-                            });
+                            args[i] = getDependecyObjectByParam(parameter, configurationInstance);
                         }catch (Exception e){
                             args[i] = null;
                         }
@@ -947,7 +946,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
     }
 
-    private Object getDependecyObjectByParam(Parameter parameter, String instance){
+    private Object getDependecyObjectByParam(Parameter parameter, Object instance){
         final ParamtrizedObject paramtrizedObject = extractType(parameter);
 
         if(paramtrizedObject.isParametrized()){
