@@ -17,6 +17,7 @@ import dtm.di.common.StopWatch;
 import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
 import dtm.di.core.ExceptionHandlerInvoker;
+import dtm.di.exceptions.InvalidBootThreadAcessEsception;
 import dtm.di.exceptions.InvalidClassRegistrationException;
 import dtm.di.exceptions.NewInstanceException;
 import dtm.di.exceptions.boot.InvalidBootException;
@@ -52,6 +53,7 @@ public class ManagedApplicationStartup {
     private static Thread.UncaughtExceptionHandler uncaughtExceptionHandler;
     private static ExceptionHandlerInvoker handlerInvoker;
     private static Future<Void> controllerAdviceScanner;
+    private static AtomicReference<Thread> bootThread = new AtomicReference<>();
     private final static AtomicReference<DependencyContainer> dependencyContainerRef = new AtomicReference<>();
     private final static AtomicReference<String[]> lauchArgsRef = new AtomicReference<>(new String[0]);
     private final static AtomicReference<ExceptionHandlerInvoker> userControllerAdvice = new AtomicReference<>();
@@ -113,6 +115,13 @@ public class ManagedApplicationStartup {
 
     public static DependencyContainer getCurrentDependencyContainer(){
         return dependencyContainerRef.get();
+    }
+
+    public static Thread getBootThread(){
+        if(bootThread == null){
+            throw new InvalidBootThreadAcessEsception();
+        }
+        return bootThread.get();
     }
 
     private static Class<?> getMainClass(){
@@ -274,6 +283,7 @@ public class ManagedApplicationStartup {
             Thread thread = new Thread(runnable);
             thread.setDaemon(false);
             thread.setName("BootThread");
+            bootThread.set(thread);
             return thread;
         });
         AtomicReference<Throwable> exception = new AtomicReference<>(null);
