@@ -1,4 +1,4 @@
-package dtm.di.startup;
+package dtm.di.application.startup;
 
 import dtm.di.annotations.ControllerAdvice;
 import dtm.di.annotations.DependencyContainerFactory;
@@ -17,11 +17,10 @@ import dtm.di.common.StopWatch;
 import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
 import dtm.di.core.ExceptionHandlerInvoker;
+import dtm.di.exceptions.CompositeBootException;
 import dtm.di.exceptions.InvalidBootThreadAcessEsception;
-import dtm.di.exceptions.InvalidClassRegistrationException;
 import dtm.di.exceptions.NewInstanceException;
 import dtm.di.exceptions.boot.InvalidBootException;
-import dtm.di.prototypes.Dependency;
 import dtm.di.storage.StaticContainer;
 import dtm.di.storage.containers.DependencyContainerStorage;
 import dtm.di.storage.handler.ControllerAdviceHandlerInvokeService;
@@ -40,8 +39,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
-public class ManagedApplicationStartup {
-    private static final Logger logger = LoggerFactory.getLogger(ManagedApplicationStartup.class);
+public class ManagedApplication {
+    private static final Logger logger = LoggerFactory.getLogger(ManagedApplication.class);
     private static Method runMethod;
     private static Method throwableMethod;
     private static Class<?> bootableClass;
@@ -50,10 +49,11 @@ public class ManagedApplicationStartup {
     private static boolean logEnabled;
     private static boolean aopEnable = true;
     private static ScheduledExecutorService scheduledExecutorService;
-    private static Thread.UncaughtExceptionHandler uncaughtExceptionHandler;
-    private static ExceptionHandlerInvoker handlerInvoker;
     private static Future<Void> controllerAdviceScanner;
-    private static AtomicReference<Thread> bootThread = new AtomicReference<>();
+    private final static AtomicReference<Thread> bootThread = new AtomicReference<>();
+    private final static AtomicReference<CompositeBootException> compositeErrorRef = new AtomicReference<>();
+    private final static AtomicReference<Thread.UncaughtExceptionHandler> uncaughtExceptionHandler = new AtomicReference<>();
+    private final static AtomicReference<ExceptionHandlerInvoker> handlerInvoker = new AtomicReference<>();
     private final static AtomicReference<DependencyContainer> dependencyContainerRef = new AtomicReference<>();
     private final static AtomicReference<String[]> lauchArgsRef = new AtomicReference<>(new String[0]);
     private final static AtomicReference<ExceptionHandlerInvoker> userControllerAdvice = new AtomicReference<>();
@@ -74,7 +74,8 @@ public class ManagedApplicationStartup {
 
     public static void doRun(boolean log, String[] args){
         lauchArgsRef.set(args);
-        handlerInvoker = getDefaultExceptionHandlerInvoker();
+        uncaughtExceptionHandler.set(Thread.getDefaultUncaughtExceptionHandler());
+        handlerInvoker.set(getDefaultExceptionHandlerInvoker());
         setExceptionHandler();
         logEnabled = log;
         logInfo("Iniciando doRun()");
@@ -118,10 +119,25 @@ public class ManagedApplicationStartup {
     }
 
     public static Thread getBootThread(){
-        if(bootThread == null){
+        if(bootThread.get() == null){
             throw new InvalidBootThreadAcessEsception();
         }
         return bootThread.get();
+    }
+
+    public static void reportError(Throwable throwable) {
+        if (throwable == null) {
+            return;
+        }
+
+        CompositeBootException composite = compositeErrorRef.updateAndGet(existing -> {
+            if (existing == null) {
+                return new CompositeBootException("Falha crítica durante a inicialização do sistema.");
+            }
+            return existing;
+        });
+
+        composite.addError(throwable);
     }
 
     private static Class<?> getMainClass(){
@@ -326,9 +342,12 @@ public class ManagedApplicationStartup {
                 executor.shutdown();
             }
 
+
             if (exception.get() != null) {
                 Throwable t = exception.get();
                 exceptionHandlerAction(Thread.currentThread(), new InvalidBootException("Erro durante boot da aplicação", t));
+            }else if(compositeErrorRef.get() != null){
+                exceptionHandlerAction(Thread.currentThread(), compositeErrorRef.get());
             }
 
         });
@@ -505,7 +524,7 @@ public class ManagedApplicationStartup {
     }
 
     private static void setExceptionHandler(){
-        Thread.setDefaultUncaughtExceptionHandler(ManagedApplicationStartup::exceptionHandlerAction);
+        Thread.setDefaultUncaughtExceptionHandler(ManagedApplication::exceptionHandlerAction);
     }
 
     private static void exceptionHandlerAction(Thread thread, Throwable throwable){
@@ -516,14 +535,14 @@ public class ManagedApplicationStartup {
                 userExceptionHandlerInvoker.invoke(thread, throwable);
             }else{
                 try{
-                    handlerInvoker.invoke(thread, throwable);
+                    handlerInvoker.get().invoke(thread, throwable);
                 }catch (Exception e){
                     logger.error("", throwable);
                 }
             }
         } catch (Exception ignored) {
             try{
-                handlerInvoker.invoke(thread, throwable);
+                handlerInvoker.get().invoke(thread, throwable);
             }catch (Exception e){
                 logger.error("", throwable);
             }
@@ -541,7 +560,7 @@ public class ManagedApplicationStartup {
     private static void defineSimpleExceptionHandler(){
         if(throwableMethod != null){
             logInfo("Definindo Exception Handler simples utilizando método anotado com @OnApplicationFail: {}", throwableMethod.getName());
-            handlerInvoker = (thread, throwable) -> {
+            handlerInvoker.set((thread, throwable) -> {
                 try{
                     Class<?>[] paramsArgs = throwableMethod.getParameterTypes();
                     Object[] args = new Object[paramsArgs.length];
@@ -560,17 +579,17 @@ public class ManagedApplicationStartup {
                     throwableMethod.invoke(null, args);
                 }catch (Exception e){
                     logError("Falha ao executar o handler @OnApplicationFail '{}'. Encaminhando para handler padrão.", throwableMethod.getName(), e);
-                    uncaughtExceptionHandler.uncaughtException(thread, throwable);
+                    if(uncaughtExceptionHandler.get() != null) uncaughtExceptionHandler.get().uncaughtException(thread, throwable);
                 }
-            };
+            });
         }else{
             logInfo("Nenhum Exception Handler definido via anotação @OnApplicationFail. Aplicando handler padrão (UncaughtExceptionHandler).");
-            handlerInvoker = new ExceptionHandlerInvoker() {
+            handlerInvoker.set(new ExceptionHandlerInvoker() {
                 @Override
                 public void invoke(Thread thread, Throwable throwable) throws Exception {
-                    uncaughtExceptionHandler.uncaughtException(thread, throwable);
+                    if(uncaughtExceptionHandler.get() != null) uncaughtExceptionHandler.get().uncaughtException(thread, throwable);
                 }
-            };
+            });
         }
     }
 
@@ -594,7 +613,7 @@ public class ManagedApplicationStartup {
         Class<?> handlerClass = dependencyContainerExceptionHandlerClassOpt.get();
         try{
             logWarn("Delegando Exception handler para [{}]", handlerClass.getName());
-            handlerInvoker = new ExceptionHandlerInvokerService(handlerClass, dependencyContainer);
+            handlerInvoker.set(new ExceptionHandlerInvokerService(handlerClass, dependencyContainer));
         }catch (NewInstanceException exception){
             logError("Falha ao instanciar o Exception Handler [{}]. Usando handler simples.", handlerClass.getName(), exception);
             defineSimpleExceptionHandler();
@@ -607,8 +626,8 @@ public class ManagedApplicationStartup {
             @Override
             public void invoke(Thread thread, Throwable throwable) throws Exception {
 
-                if(uncaughtExceptionHandler != null){
-                    uncaughtExceptionHandler.uncaughtException(thread, throwable);
+                if(uncaughtExceptionHandler.get() != null){
+                    uncaughtExceptionHandler.get().uncaughtException(thread, throwable);
                     return;
                 }
 
@@ -643,7 +662,7 @@ public class ManagedApplicationStartup {
 
                         Object controllerAdviceInstance = dependencyContainer.newInstance(classOfControllerAdvice);
                         if(controllerAdviceInstance != null){
-                            userControllerAdvice.set(new ControllerAdviceHandlerInvokeService(controllerAdviceInstance, handlerInvoker));
+                            userControllerAdvice.set(new ControllerAdviceHandlerInvokeService(controllerAdviceInstance, handlerInvoker.get()));
                         }
                     } else {
                         logWarn("Nenhuma classe anotada com @ControllerAdvice foi encontrada.");

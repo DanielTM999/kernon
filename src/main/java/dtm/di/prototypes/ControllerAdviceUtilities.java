@@ -1,12 +1,11 @@
 package dtm.di.prototypes;
 
-import dtm.di.startup.ManagedApplicationStartup;
+import dtm.di.application.startup.ManagedApplication;
 
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.LockSupport;
 
 public final class ControllerAdviceUtilities {
 
@@ -21,7 +20,7 @@ public final class ControllerAdviceUtilities {
                     boolean isLambda = handlerClass.isSynthetic() &&
                             handlerClass.getName().contains("$$Lambda");
 
-                    if (isLambda && handlerClass.getName().contains(ManagedApplicationStartup.class.getName())) {
+                    if (isLambda && handlerClass.getName().contains(ManagedApplication.class.getName())) {
                         try {
                             throwableAction.run();
                             break;

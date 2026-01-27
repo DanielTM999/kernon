@@ -58,15 +58,15 @@ Anote sua classe principal(a com o main(String[] args)) com `@ApplicationBoot`:
 ## Sintaxe Básica
 
 ```java
-import dtm.di.startup.ManagedApplicationStartup;
+import dtm.di.application.startup.ManagedApplication;
 import dtm.di.annotations.boot.ApplicationBoot;
 
 @ApplicationBoot
 public class MyApp {
-    public static void main(String[] args) {
-        boolean log = true;
-        ManagedApplicationStartup.doRun(log); // true para habilitar logs
-    }
+  public static void main(String[] args) {
+    boolean log = true;
+    ManagedApplication.doRun(log); // true para habilitar logs
+  }
 }
 ```
 
@@ -79,14 +79,14 @@ O `@ApplicationBoot` permite especificar uma classe externa para centralizar tod
 ## Sintaxe Básica
 
 ```java
-import dtm.di.startup.ManagedApplicationStartup;
+import dtm.di.application.startup.ManagedApplication;
 import dtm.di.annotations.boot.ApplicationBoot;
 
 @ApplicationBoot(AppBootConfig.class)  // Classe de configuração externa
 public class MainApplication {
-    public static void main(String[] args) {
-        ManagedApplicationStartup.doRun(true);
-    }
+  public static void main(String[] args) {
+    ManagedApplication.doRun(true);
+  }
 }
 ```
 
@@ -201,16 +201,16 @@ public class AppLifecycle {
 - Para utilizar o sistema de tarefas agendadas, adicione a anotação **`@EnableSchedule`** na classe principal ou na classe marcada no **`@ApplicationBoot`**
 
 ```java
-    import dtm.di.annotations.*;
-    import dtm.di.startup.ManagedApplicationStartup;    
 
-    @EnableSchedule(threads = 4)
-    @ApplicationBoot
-    public class AppMain {
-        public static void main(String[] args) {
-            ManagedApplicationStartup.doRun(true);
-        }
-    }
+import dtm.di.application.startup.ManagedApplication;
+
+@EnableSchedule(threads = 4)
+@ApplicationBoot
+public class AppMain {
+  public static void main(String[] args) {
+    ManagedApplication.doRun(true);
+  }
+}
 ```
 
 - **threads**: número de threads disponíveis para executar os métodos agendados. O padrão mínimo é 2.
