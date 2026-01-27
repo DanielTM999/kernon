@@ -2,6 +2,7 @@ package dtm.di.core;
 
 import dtm.di.exceptions.NewInstanceException;
 import dtm.di.prototypes.Dependency;
+import dtm.di.prototypes.async.AsyncComponent;
 
 import java.util.List;
 import java.util.Map;
@@ -31,6 +32,11 @@ public interface DependencyContainerGetter {
      * @return instância da dependência qualificada
      */
     <T> T getDependency(Class<T> reference, String qualifier);
+
+
+    <T> AsyncComponent<T> getDependencyAsync(Class<T> reference, boolean isAsyncComponent);
+
+    <T> AsyncComponent<T> getDependencyAsync(Class<T> reference, String qualifier, boolean isAsyncComponent);
 
     /**
      * Obtém uma Lista de instância da dependência associada à classe de referência e qualificadora específica.

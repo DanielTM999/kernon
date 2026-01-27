@@ -25,7 +25,7 @@ import java.util.function.Supplier;
  *
  * @param <T> Tipo da dependência fornecida pela função.
  */
-public interface RegistrationFunction<T> {
+public interface RegistrationFunction<T> extends ComponentActionRegistry<T>{
 
     /**
      * Retorna a função (supplier) responsável por fornecer a instância da dependência.
@@ -38,23 +38,4 @@ public interface RegistrationFunction<T> {
     @NonNull
     Supplier<T> getFunction();
 
-    /**
-     * Retorna a classe de referência associada a essa dependência.
-     * <p>
-     * É usada pelo container para resolver injeções por tipo.
-     *
-     * @return Classe de referência do bean.
-     */
-    @NonNull
-    Class<T> getReferenceClass();
-
-    /**
-     * Retorna o qualificador associado a essa função de registro.
-     * <p>
-     * Isso permite que o container diferencie instâncias do mesmo tipo quando necessário.
-     *
-     * @return Nome do qualificador.
-     */
-    @NonNull
-    String getQualifier();
 }

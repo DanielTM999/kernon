@@ -14,6 +14,8 @@ import dtm.di.prototypes.CompositeDependency;
 import dtm.di.prototypes.Dependency;
 import dtm.di.prototypes.LazyDependency;
 import dtm.di.prototypes.RegistrationFunction;
+import dtm.di.prototypes.async.AsyncComponent;
+import dtm.di.prototypes.async.AsyncRegistrationFunction;
 import dtm.di.prototypes.proxy.ProxyFactory;
 import dtm.di.sort.TopologicalSorter;
 import dtm.di.storage.ClassFinderConfigurationsStorage;
@@ -252,6 +254,16 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
     }
 
     @Override
+    public <T> AsyncComponent<T> getDependencyAsync(Class<T> reference, boolean isAsyncComponent) {
+        return null;
+    }
+
+    @Override
+    public <T> AsyncComponent<T> getDependencyAsync(Class<T> reference, String qualifier, boolean isAsyncComponent) {
+        return null;
+    }
+
+    @Override
     public <T> List<T> getDependencyList(Class<T> reference) {
         throwIfUnload();
         try{
@@ -380,6 +392,11 @@ public class DependencyContainerStorageMetrics implements DependencyContainer, C
     @Override
     public <T> void registerDependency(RegistrationFunction<T> registrationFunction) throws InvalidClassRegistrationException {
         registerObject(registrationFunction);
+    }
+
+    @Override
+    public <T> void registerDependency(AsyncRegistrationFunction<T> registrationFunction) throws InvalidClassRegistrationException {
+
     }
 
     @Override
