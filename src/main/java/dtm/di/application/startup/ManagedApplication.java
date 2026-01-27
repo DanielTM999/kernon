@@ -12,8 +12,6 @@ import dtm.di.annotations.boot.OnBoot;
 import dtm.di.annotations.scanner.PackageScanIgnore;
 import dtm.di.annotations.schedule.Schedule;
 import dtm.di.annotations.schedule.ScheduleMethod;
-import dtm.di.common.DefaultStopWatch;
-import dtm.di.common.StopWatch;
 import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
 import dtm.di.core.ExceptionHandlerInvoker;
@@ -229,7 +227,6 @@ public class ManagedApplication {
     }
 
     private static Map<LifecycleHook.Event, List<Method>> getEventMethodMap() {
-        StopWatch sw = new DefaultStopWatch("getEventMethodMap");
         Map<LifecycleHook.Event, Map<Method, Integer>> hookMap = new EnumMap<>(LifecycleHook.Event.class);
 
         for (Method method : bootableClass.getDeclaredMethods()) {
