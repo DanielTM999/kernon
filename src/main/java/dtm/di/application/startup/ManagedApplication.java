@@ -537,14 +537,14 @@ public class ManagedApplication {
                 try{
                     handlerInvoker.get().invoke(thread, throwable);
                 }catch (Exception e){
-                    logger.error("", throwable);
+                    executeDefalutThreadExceptionHandler(thread, e);
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception exBase) {
             try{
                 handlerInvoker.get().invoke(thread, throwable);
             }catch (Exception e){
-                logger.error("", throwable);
+                executeDefalutThreadExceptionHandler(thread, e);
             }
         }
     }
@@ -579,7 +579,7 @@ public class ManagedApplication {
                     throwableMethod.invoke(null, args);
                 }catch (Exception e){
                     logError("Falha ao executar o handler @OnApplicationFail '{}'. Encaminhando para handler padrão.", throwableMethod.getName(), e);
-                    if(uncaughtExceptionHandler.get() != null) uncaughtExceptionHandler.get().uncaughtException(thread, throwable);
+                    executeDefalutThreadExceptionHandler(thread, throwable);
                 }
             });
         }else{
@@ -587,7 +587,7 @@ public class ManagedApplication {
             handlerInvoker.set(new ExceptionHandlerInvoker() {
                 @Override
                 public void invoke(Thread thread, Throwable throwable) throws Exception {
-                    if(uncaughtExceptionHandler.get() != null) uncaughtExceptionHandler.get().uncaughtException(thread, throwable);
+                    executeDefalutThreadExceptionHandler(thread, throwable);
                 }
             });
         }
@@ -625,13 +625,7 @@ public class ManagedApplication {
         return new ExceptionHandlerInvoker() {
             @Override
             public void invoke(Thread thread, Throwable throwable) throws Exception {
-
-                if(uncaughtExceptionHandler.get() != null){
-                    uncaughtExceptionHandler.get().uncaughtException(thread, throwable);
-                    return;
-                }
-
-                logger.error("Exceção não tratada na thread {}: ", thread.getName(), throwable);
+                executeDefalutThreadExceptionHandler(thread, throwable);
             }
         };
     }
@@ -684,5 +678,13 @@ public class ManagedApplication {
         }catch (Exception e){
             logError("Erro ao carregar ControllerAdvice", e);
         }
+    }
+
+    private static void executeDefalutThreadExceptionHandler(Thread thread, Throwable throwable){
+        if(uncaughtExceptionHandler.get() != null){
+            uncaughtExceptionHandler.get().uncaughtException(thread, throwable);
+            return;
+        }
+        throwable.printStackTrace();
     }
 }
