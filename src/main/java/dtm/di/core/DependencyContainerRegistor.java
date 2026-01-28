@@ -28,6 +28,26 @@ public interface DependencyContainerRegistor {
      */
     void registerDependency(Object dependency) throws InvalidClassRegistrationException;
 
+
+    /**
+     * Registra uma instância de dependência permitindo especificar se deve ser aplicado AOP (Aspect-Oriented Programming).
+     *
+     * @param dependency objeto da dependência a ser registrado
+     * @param withAOP    define se a instância deve ser envolvida por um proxy de interceptação
+     * @throws InvalidClassRegistrationException se houver erro no registro da dependência
+     */
+    void registerDependency(Object dependency, boolean withAOP) throws InvalidClassRegistrationException;
+
+    /**
+     * Registra uma instância de dependência com qualificadora e controle de AOP.
+     *
+     * @param dependency objeto da dependência a ser registrado
+     * @param qualifier  string qualificadora para diferenciar múltiplas implementações
+     * @param withAOP    define se a instância deve ser envolvida por um proxy de interceptação
+     * @throws InvalidClassRegistrationException se houver erro no registro da dependência
+     */
+    void registerDependency(Object dependency, String qualifier, boolean withAOP) throws InvalidClassRegistrationException;
+
     /**
      * Registra uma dependência através de uma função de registro personalizada.
      *

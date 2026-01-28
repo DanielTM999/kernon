@@ -362,6 +362,16 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     @Override
+    public void registerDependency(Object dependency, boolean withAOP) throws InvalidClassRegistrationException {
+        registerObject(dependency, withAOP);
+    }
+
+    @Override
+    public void registerDependency(Object dependency, String qualifier, boolean withAOP) throws InvalidClassRegistrationException {
+        registerObject(dependency, qualifier, withAOP);
+    }
+
+    @Override
     public <T> void registerDependency(RegistrationFunction<T> registrationFunction) throws InvalidClassRegistrationException {
         registerObject(registrationFunction);
     }
@@ -1161,6 +1171,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private void registerObject(@NonNull Object dependency) throws InvalidClassRegistrationException{
         registerObject(dependency, "default");
+    }
+
+    private void registerObject(@NonNull Object dependency, boolean aop) throws InvalidClassRegistrationException{
+        registerObject(dependency, "default", aop);
     }
 
     private void registerObject(@NonNull Object dependency, @NonNull String qualifier) throws InvalidClassRegistrationException {

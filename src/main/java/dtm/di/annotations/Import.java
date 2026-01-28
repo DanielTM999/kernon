@@ -7,7 +7,7 @@ import java.lang.annotation.*;
  * e processados pelo Injetor de Dependência.
  *
  * <p>Quando o injetor encontra uma classe anotada com {@code @Import}, ele adiciona
- * as classes especificadas no atributo {@link #configs()} à sua <b>fila de análise</b>.
+ * as classes especificadas no atributo {@link #value()} à sua <b>fila de análise</b>.
  * Isso garante que essas classes sejam escaneadas, instanciadas e registradas no
  * contexto da aplicação, mesmo que não estejam no pacote base de varredura.</p>
  *
