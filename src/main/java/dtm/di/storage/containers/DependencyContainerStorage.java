@@ -56,7 +56,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private final AtomicReference<InjectionStrategy> injectionStrategy;
 
-    private final Map<Class<?>, List<Dependency>> dependencyContainer;
+    private final Map<Class<?>, Map<String, Dependency>> dependencyContainer;
     private final ClassFinder classFinder;
     private final AtomicBoolean loaded;
 
@@ -257,12 +257,12 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     public <T, S extends T> Map<Class<S>, S> getInstancesByClass(Class<T> assignableClass) {
         Map<Class<S>, S> classSMap = new ConcurrentHashMap<>();
 
-        for(Map.Entry<Class<?>, List<Dependency>> entry : dependencyContainer.entrySet()){
+        for(Map.Entry<Class<?>, Map<String, Dependency>> entry : dependencyContainer.entrySet()){
             final Class<?> refClass = entry.getKey();
-            final List<Dependency> dependencyList = entry.getValue();
+            final Map<String, Dependency> dependencyList = entry.getValue();
 
             if (assignableClass.isAssignableFrom(refClass)) {
-                for (Dependency dependency : dependencyList) {
+                for (Dependency dependency : dependencyList.values()) {
                     try {
                         Object instance = dependency.getDependency();
                         if (instance != null) {
@@ -309,14 +309,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     @Override
     public List<Dependency> getRegisteredDependencies() {
-        return new ArrayList<>(dependencyContainer.values().stream()
-                .flatMap(List::stream)
-                .collect(Collectors.toMap(
-                        Dependency::getDependencyClass,
-                        d -> d,
-                        (existing, replacement) -> existing
-                ))
-                .values());
+        return dependencyContainer.values().stream()
+                .flatMap(innerMap -> innerMap.values().stream())
+                .toList();
     }
 
     @Override
@@ -358,7 +353,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     public void unRegisterDependency(Class<?> dependency) {
         throwIfUnload();
         if(!dependencyContainer.containsKey(dependency)) return;
-        List<Dependency> dependencyList = new ArrayList<>(dependencyContainer.get(dependency));
+        List<Dependency> dependencyList = new ArrayList<>(getDependencyMap(dependency).values());
 
         for (Dependency dependencyObj : dependencyList){
             for(Class<?> clazz : dependencyObj.getDependencyClassInstanceTypes()){
@@ -431,11 +426,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         try {
             if (dependencyContainer.containsKey(dependency)) return;
             validRegistration(dependency, registeringClasses);
-            final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(dependency, new ArrayList<Dependency>());
-            validQualifier(listOfDependency, qualifier, dependency);
-            if(childrenRegistration){
-                registerAutoInject(dependency, registeringClasses);
-            }
+            final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(dependency, qualifier, childrenRegistration);
 
             boolean singleton = isSingleton(dependency);
             DependencyObject dependencyObject = singleton
@@ -455,9 +446,12 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                         .build();
 
 
-            listOfDependency.add(dependencyObject);
-            dependencyContainer.put(dependency, listOfDependency);
-            registerSubTypes(dependency, listOfDependency);
+            registerInContainer(
+                    mapOfDependency,
+                    dependency,
+                    dependencyObject,
+                    qualifier
+            );
         }catch (Exception e) {
             log.error("Falha ao registrar a dependência: {}", dependency.getName(), e);
             throw new InvalidClassRegistrationException(
@@ -500,8 +494,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         registeringClasses.add(dependency);
     }
 
-    private void validQualifier(final List<Dependency> listOfDependency, String qualifier, Class<?> dependency) throws InvalidClassRegistrationException{
-        final boolean containsQualifier = listOfDependency.stream().anyMatch(d -> d.getQualifier().equals(qualifier));
+    private void validQualifier(final Map<String, Dependency> listOfDependency, String qualifier, Class<?> dependency) throws InvalidClassRegistrationException{
+        final boolean containsQualifier = listOfDependency.containsKey(qualifier);
         if(containsQualifier){
             throw new InvalidClassRegistrationException("Qualificador '"+qualifier+"' ja registrado para a dependencia: "+dependency, dependency);
         }
@@ -1047,10 +1041,11 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private <T> AsyncComponent<T> getAsyncComponent(final Class<T> reference, final String qualifier, Supplier<Boolean> showWarnIfError){
         try{
-            final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(AsyncComponent.class, Collections.emptyList());
+            final Map<String, Dependency> listOfDependency = getDependencyMap(AsyncComponent.class);
             final Dependency dependencyObject = listOfDependency
+                    .values()
                     .stream()
-                    .filter(d -> d.getQualifier().equals(qualifier))
+                    .filter(d -> (d.getQualifier().equals(qualifier)))
                     .findFirst()
                     .orElseThrow(() -> {
                 return new DependencyInjectionException("Erro ao obter dependência: reference="+reference+", qualifier="+qualifier);
@@ -1138,16 +1133,19 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private Object getObjectToInjectVariable(Field variable, Class<?> clazzVariable) throws Exception{
         final String qualifierName = getQualifierName(variable);
-        List<Dependency> listOfDependency = dependencyContainer.getOrDefault(clazzVariable, Collections.emptyList());
-        if(listOfDependency.isEmpty() && childrenRegistration){
+        Map<String, Dependency> mapOfDependency = getDependencyMap(clazzVariable);
+        if(mapOfDependency.isEmpty() && childrenRegistration){
             try {
                 registerDependency(clazzVariable);
             } catch (InvalidClassRegistrationException e) {
                 throw new DependencyContainerRuntimeException(e);
             }
-            listOfDependency = dependencyContainer.getOrDefault(clazzVariable, Collections.emptyList());
+            mapOfDependency = getDependencyMap(clazzVariable);
         }
-        Dependency dependencyObject = listOfDependency.stream().filter(d -> d.getQualifier().equals(qualifierName)).findFirst().orElseThrow(() -> new DependencyContainerException("Dependencia não encontrada para: "+clazzVariable));
+        Dependency dependencyObject = mapOfDependency.get(qualifierName);
+        if(dependencyObject == null){
+            throw new DependencyContainerException("Dependencia não encontrada para: "+clazzVariable);
+        }
         return dependencyObject.getDependency();
     }
 
@@ -1188,12 +1186,15 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             final Class<?> clazz = dependency.getClass();
             final Object toRegistrate = isAopEnabled(clazz) ? proxyObject(dependency, clazz) : dependency;
             if(dependencyContainer.containsKey(clazz)) return;
-            final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(clazz, new ArrayList<Dependency>());
-            validQualifier(listOfDependency, qualifier, clazz);
+            final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(clazz, qualifier);
             DependencyObject dependencyObject = new DependencyObject(clazz, qualifier, true, () -> {return toRegistrate;}, toRegistrate);
-            listOfDependency.add(dependencyObject);
-            dependencyContainer.put(clazz, listOfDependency);
-            registerSubTypes(clazz, listOfDependency);
+
+            registerInContainer(
+                    mapOfDependency,
+                    clazz,
+                    dependencyObject,
+                    qualifier
+            );
         }catch (Exception e) {
             throw new InvalidClassRegistrationException(
                     "Erro ao criar a dependencia: " + dependency.getClass()+ " ==> causa: "+e.getMessage(),
@@ -1208,12 +1209,14 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             final Class<?> clazz = dependency.getClass();
             final Object toRegistrate = aop ? proxyObject(dependency, clazz) : dependency;
             if(dependencyContainer.containsKey(clazz)) return;
-            final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(clazz, new ArrayList<Dependency>());
-            validQualifier(listOfDependency, qualifier, clazz);
+            final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(clazz, qualifier);
             DependencyObject dependencyObject = new DependencyObject(clazz, qualifier, true, () -> {return toRegistrate;}, toRegistrate);
-            listOfDependency.add(dependencyObject);
-            dependencyContainer.put(clazz, listOfDependency);
-            registerSubTypes(clazz, listOfDependency);
+            registerInContainer(
+                    mapOfDependency,
+                    clazz,
+                    dependencyObject,
+                    qualifier
+            );
         }catch (Exception e) {
             throw new InvalidClassRegistrationException(
                     "Erro ao criar a dependencia: " + dependency.getClass()+ " ==> causa: "+e.getMessage(),
@@ -1240,12 +1243,14 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             };
 
             if(dependencyContainer.containsKey(referenceClass)) return;
-            final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(referenceClass, new ArrayList<Dependency>());
-            validQualifier(listOfDependency, qualifier, referenceClass);
+            final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(referenceClass, qualifier);
             DependencyObject dependencyObject = new DependencyObject(referenceClass, qualifier, false, activatorFunction, activatorFunction);
-            listOfDependency.add(dependencyObject);
-            dependencyContainer.put(referenceClass, listOfDependency);
-            registerSubTypes(referenceClass, listOfDependency);
+            registerInContainer(
+                    mapOfDependency,
+                    referenceClass,
+                    dependencyObject,
+                    qualifier
+            );
         }catch (Exception e) {
             throw new InvalidClassRegistrationException(
                     "Erro ao criar a dependencia: " + referenceClass+ " ==> causa: "+e.getMessage(),
@@ -1274,15 +1279,19 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
               return new AsyncComponentStorage<>(referenceClass, qualifier, resolveComponentAsync);
             };
 
-            final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(AsyncComponent.class, new ArrayList<Dependency>());
-            if(listOfDependency.stream().anyMatch(d -> d.getDependency().equals(referenceClass))){
+            final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(AsyncComponent.class, qualifier, referenceClass);
+            if(mapOfDependency.values().stream().anyMatch(d -> d.getDependencyClass().equals(referenceClass))){
                 return;
             }
-            validQualifier(listOfDependency, qualifier, referenceClass);
             DependencyObject dependencyObject = new DependencyObject(referenceClass, qualifier, false, activatorFunction, activatorFunction);
 
-            listOfDependency.add(dependencyObject);
-            dependencyContainer.put(AsyncComponent.class, listOfDependency);
+            registerInContainer(
+                    mapOfDependency,
+                    AsyncComponent.class,
+                    dependencyObject,
+                    qualifier,
+                    false
+            );
         }catch (Exception e) {
             throw new InvalidClassRegistrationException(
                     "Erro ao criar a dependencia: " + referenceClass+ " ==> causa: "+e.getMessage(),
@@ -1293,7 +1302,50 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     }
 
-    private void registerSubTypes(@NonNull Class<?> clazz, @NonNull List<Dependency> listOfDependency){
+    private void registerInContainer(
+            @NonNull final Map<String, Dependency> listOfDependency,
+            @NonNull Class<?> classToRegister,
+            @NonNull DependencyObject dependencyObject ,
+            @NonNull String qualifier
+    ){
+        registerInContainer(listOfDependency, classToRegister, dependencyObject, qualifier, true);
+    }
+
+    private void registerInContainer(
+            @NonNull final Map<String, Dependency> listOfDependency,
+            @NonNull Class<?> classToRegister,
+            @NonNull DependencyObject dependencyObject ,
+            @NonNull String qualifier,
+            boolean registerSubTypes
+    ){
+        listOfDependency.put(qualifier, dependencyObject);
+        dependencyContainer.put(classToRegister, listOfDependency);
+        if(registerSubTypes)registerSubTypes(classToRegister, listOfDependency);
+    }
+
+    private Map<String, Dependency> getDependencyMap(Class<?> referenceClass) {
+        return dependencyContainer.computeIfAbsent(referenceClass, k -> new ConcurrentHashMap<>());
+    }
+
+    private Map<String, Dependency> getDependencyMapAndValidDependency(Class<?> referenceClass, @NonNull String qualifier){
+        return getDependencyMapAndValidDependency(referenceClass, qualifier, referenceClass);
+    }
+
+    private Map<String, Dependency> getDependencyMapAndValidDependency(Class<?> referenceClass, @NonNull String qualifier, boolean registerAutoInject){
+        return getDependencyMapAndValidDependency(referenceClass, qualifier, referenceClass, registerAutoInject);
+    }
+
+    private Map<String, Dependency> getDependencyMapAndValidDependency(Class<?> referenceClass, @NonNull String qualifier, Class<?> validClass){
+        return getDependencyMapAndValidDependency(referenceClass, qualifier, referenceClass, true);
+    }
+
+    private Map<String, Dependency> getDependencyMapAndValidDependency(Class<?> referenceClass, @NonNull String qualifier, Class<?> validClass, boolean registerAutoInject){
+        Map<String, Dependency> mapOfDependency = dependencyContainer.computeIfAbsent(referenceClass, k -> new ConcurrentHashMap<>());
+        validQualifier(mapOfDependency, qualifier, validClass);
+        return mapOfDependency;
+    }
+
+    private void registerSubTypes(@NonNull Class<?> clazz, @NonNull Map<String, Dependency> listOfDependency){
         if (clazz.equals(Object.class) || clazz.isInterface()) {
             return;
         }
@@ -1589,10 +1641,12 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private <T> T getDependency(Class<T> reference, String qualifier, Supplier<Boolean> showWarnIfError) {
         try{
-            final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(reference, Collections.emptyList());
-            final Dependency dependencyObject = listOfDependency.stream().filter(d -> d.getQualifier().equals(qualifier)).findFirst().orElseThrow(() -> {
-                return new DependencyInjectionException("Erro ao obter dependência: reference="+reference+", qualifier="+qualifier);
-            });
+            final Map<String, Dependency> listOfDependency = getDependencyMap(reference);
+            final Dependency dependencyObject = listOfDependency.get(qualifier);
+
+            if(dependencyObject == null){
+                throw new DependencyInjectionException("Erro ao obter dependência: reference="+reference+", qualifier="+qualifier);
+            }
             Object instance = dependencyObject.getDependency();
             return reference.cast(instance);
         }catch (Exception e){
@@ -1607,8 +1661,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private <T> List<T> getDependencyListSelf(Class<T> reference) {
         try{
-            final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(reference, Collections.emptyList());
-            return listOfDependency.stream().map(d -> {
+            return getDependencyMap(reference).values().stream().map(d -> {
                 try{
                     return reference.cast(d.getDependency());
                 } catch (Exception e) {
