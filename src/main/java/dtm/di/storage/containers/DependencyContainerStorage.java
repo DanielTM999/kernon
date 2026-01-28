@@ -808,6 +808,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                         try{
                             args[i] = getDependecyObjectByParam(parameter, configurationInstance);
                         }catch (Exception e){
+                            log.error("Erro ao abter parametro: {} no metodo: {}, classe: {}", parameter.getName(), method.getName(), configurationsClass);
                             args[i] = null;
                         }
                     }
@@ -1330,21 +1331,31 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private void injectExternalModules(){
         List<CompletableFuture<Void>> futures = new ArrayList<>();
-
+        Set<Class<?>> discoveredClasses = ConcurrentHashMap.newKeySet();
         for (Class<?> clazz : loadedSystemClasses){
             CompletableFuture<Void> task = CompletableFuture.runAsync(() -> {
-                Import importAnnotation = AnnotationsUtils.getMetaAnnotation(clazz, Import.class);
-                if(importAnnotation != null){
-                    Class<?>[] configs = importAnnotation.value();
-                    if (configs.length > 0) {
-                        loadedSystemClasses.addAll(Arrays.asList(configs));
-                    }
-                }
+                scanRecursive(clazz, new HashSet<>(), discoveredClasses);
             }, mainExecutor);
             futures.add(task);
         }
 
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        loadedSystemClasses.addAll(discoveredClasses);
+    }
+
+    private void scanRecursive(Class<?> clazz, Set<Class<?>> visited, Set<Class<?>> globalResult){
+        Import importAnnotation = AnnotationsUtils.getMetaAnnotation(clazz, Import.class);
+
+        if(importAnnotation != null){
+            Class<?>[] configs = importAnnotation.value();
+
+            for (Class<?> toImport : configs) {
+                globalResult.add(toImport);
+                scanRecursive(toImport, visited, globalResult);
+            }
+
+        }
+
     }
 
     private boolean filterConcreteBean(Class<?> clazz, Class<? extends Annotation> annotation){

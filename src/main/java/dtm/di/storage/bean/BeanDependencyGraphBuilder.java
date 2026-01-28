@@ -5,11 +5,12 @@ import dtm.di.annotations.Component;
 import dtm.di.annotations.Inject;
 import dtm.di.annotations.aop.DisableAop;
 import dtm.di.common.AnnotationsUtils;
+import dtm.di.prototypes.RegistrationFunction;
+import dtm.di.prototypes.async.AsyncComponent;
+import dtm.di.prototypes.async.AsyncRegistrationFunction;
 import lombok.extern.slf4j.Slf4j;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.lang.reflect.Parameter;
+
+import java.lang.reflect.*;
 import java.util.*;
 
 @Slf4j
@@ -79,7 +80,7 @@ public class BeanDependencyGraphBuilder {
             }
 
             String beanId = configClass.getName() + "." + method.getName();
-            Class<?> returnType = method.getReturnType();
+            Class<?> returnType = extractProcucedType(method);
 
             Set<String> methodDeps = new HashSet<>();
             methodDeps.add(configClass.getName());
@@ -101,6 +102,31 @@ public class BeanDependencyGraphBuilder {
             allBeans.put(beanId, beanDef);
             typeToBeanId.putIfAbsent(returnType, beanId);
         }
+    }
+
+    private Class<?> extractProcucedType(Method method){
+        Class<?> returnType = method.getReturnType();
+
+        if(AsyncRegistrationFunction.class.isAssignableFrom(returnType)){
+            returnType = AsyncComponent.class;
+        }else if(RegistrationFunction.class.isAssignableFrom(returnType)){
+            Type genericReturnType = method.getGenericReturnType();
+
+            if (genericReturnType instanceof ParameterizedType parameterizedType) {
+                Type[] typeArguments = parameterizedType.getActualTypeArguments();
+
+                if (typeArguments.length > 0) {
+                    Type actualType = typeArguments[0];
+                    if (actualType instanceof Class<?> actualClass) {
+                        returnType = actualClass;
+                    } else if (actualType instanceof ParameterizedType pt) {
+                        returnType = (Class<?>) pt.getRawType();
+                    }
+                }
+            }
+        }
+
+        return returnType;
     }
 
     private void resolveDependencies() {
