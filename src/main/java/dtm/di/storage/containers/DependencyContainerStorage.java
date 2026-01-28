@@ -302,7 +302,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     public <T> T newInstance(Class<T> referenceClass) throws NewInstanceException {
         throwIfUnload();
         try{
-            return (T)createObject(referenceClass, isAop(referenceClass));
+            return (T)createObject(referenceClass, isAopEnabled(referenceClass));
         }catch (Exception e){
             throw new NewInstanceException(e.getMessage(), referenceClass, e);
         }
@@ -312,7 +312,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     public <T> T newInstance(Class<T> referenceClass, Object... contructorArgs) throws NewInstanceException {
         throwIfUnload();
         try{
-            return (T)createObject(referenceClass, isAop(referenceClass), contructorArgs);
+            return (T)createObject(referenceClass, isAopEnabled(referenceClass), contructorArgs);
         }catch (Exception e){
             throw new NewInstanceException(e.getMessage(), referenceClass, e);
         }
@@ -373,12 +373,12 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     @Override
     public <T> void registerDependency(RegistrationFunction<T> registrationFunction) throws InvalidClassRegistrationException {
-        registerObject(registrationFunction);
+        registerObjectFunction(registrationFunction, isAopEnabled(registrationFunction.getReferenceClass()));
     }
 
     @Override
     public <T> void registerDependency(AsyncRegistrationFunction<T> registrationFunction) throws InvalidClassRegistrationException {
-        registerObject(registrationFunction);
+        registerObjectFunction(registrationFunction, isAopEnabled(registrationFunction.getReferenceClass()));
     }
 
     @Override
@@ -512,7 +512,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         int order = 0;
         for(Class<?> subClass : listOfRegistration){
             if(!dependencyContainer.containsKey(subClass)){
-                loadBeen(new ServiceBean(subClass, order++, isAop(clazz)), registeringClasses, getQualifierName(subClass));
+                loadBeen(new ServiceBean(subClass, order++, isAopEnabled(clazz)), registeringClasses, getQualifierName(subClass));
             }
         }
     }
@@ -556,7 +556,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 Set<ServiceBean> layer = ConcurrentHashMap.newKeySet();
 
                 classSet.parallelStream().forEach(clazz -> {
-                    layer.add(new ServiceBean(clazz, layerOrder, isAop(clazz)));
+                    layer.add(new ServiceBean(clazz, layerOrder, isAopEnabled(clazz)));
                 });
 
                 serviceBeensDefinitionLayer.add(layer);
@@ -566,7 +566,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             Set<Class<?>> ordered = TopologicalSorter.sort(serviceLoadedClassActive, dependencyGraph);
             int order = 0;
             for (Class<?> clazz : ordered) {
-                serviceBeensDefinition.add(new ServiceBean(clazz, order++, isAop(clazz)));
+                serviceBeensDefinition.add(new ServiceBean(clazz, order++, isAopEnabled(clazz)));
             }
         }
     }
@@ -839,11 +839,11 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     if(singleton){
 
                         if(result instanceof AsyncRegistrationFunction<?> asyncRegistrationFunction){
-                            registerObject(asyncRegistrationFunction);
+                            registerObjectFunction(asyncRegistrationFunction, isAopEnabled(method));
                         }else if(result instanceof RegistrationFunction<?> registrationFunction){
-                            registerObject(registrationFunction);
+                            registerObjectFunction(registrationFunction, isAopEnabled(method));
                         }else{
-                            boolean aop = (isAop(method) && isAop(result.getClass()));
+                            boolean aop = (isAopEnabled(method) && isAopEnabled(result.getClass()));
                             registerObject(result, qualifier, aop);
                         }
 
@@ -858,7 +858,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private Object createObject(@NonNull Class<?> clazz){
-        return createObject(clazz, isAop(clazz));
+        return createObject(clazz, isAopEnabled(clazz));
     }
 
     private Object createObject(@NonNull Class<?> clazz, boolean aop){
@@ -1157,7 +1157,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                         null
                 );
             }
-            ServiceBean serviceBean = new ServiceBean(beenClass, 0, isAop(instance.getClass()));
+            ServiceBean serviceBean = new ServiceBean(beenClass, 0, isAopEnabled(instance.getClass()));
 
             loadBeen(serviceBean, new HashSet<>(), qualifier);
         }catch (NoSuchMethodException e) {
@@ -1180,7 +1180,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private void registerObject(@NonNull Object dependency, @NonNull String qualifier) throws InvalidClassRegistrationException {
         try {
             final Class<?> clazz = dependency.getClass();
-            final Object toRegistrate = isAop(clazz) ? proxyObject(dependency, clazz) : dependency;
+            final Object toRegistrate = isAopEnabled(clazz) ? proxyObject(dependency, clazz) : dependency;
             if(dependencyContainer.containsKey(clazz)) return;
             final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(clazz, new ArrayList<Dependency>());
             validQualifier(listOfDependency, qualifier, clazz);
@@ -1217,21 +1217,22 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
     }
 
-    private void registerObject(@NonNull RegistrationFunction<?> registrationFunction){
+    private void registerObjectFunction(@NonNull RegistrationFunction<?> registrationFunction, Boolean isAop){
         final Class<?> referenceClass = registrationFunction.getReferenceClass();
         final String qualifier = (registrationFunction.getQualifier().isEmpty()) ? "default" : registrationFunction.getQualifier();
 
         try{
-            Supplier<?> activatorFunction;
-            if(isAop(referenceClass)){
-                activatorFunction = () -> {
-                    Object instance = registrationFunction.getFunction().get();
-                    if(instance == null) throw new NullPointerException("Intancia invalida para "+referenceClass);
-                    return proxyObject(instance, instance.getClass());
-                };
-            }else{
-                activatorFunction = registrationFunction.getFunction();
-            }
+            Supplier<?> activatorFunction = () -> {
+                boolean shouldApplyAop = (isAop != null) ? isAop : isAopEnabled(referenceClass);
+                Object instance = registrationFunction.getFunction().get();
+
+                if (instance == null) {
+                    throw new InvalidClassRegistrationException("Instância inválida para " + referenceClass, referenceClass);
+                }
+
+                return shouldApplyAop ? proxyObject(instance, instance.getClass()) : instance;
+            };
+
             if(dependencyContainer.containsKey(referenceClass)) return;
             final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(referenceClass, new ArrayList<Dependency>());
             validQualifier(listOfDependency, qualifier, referenceClass);
@@ -1248,19 +1249,20 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
     }
 
-    private void registerObject(@NonNull AsyncRegistrationFunction<?> asyncRegistrationFunction){
+    private void registerObjectFunction(@NonNull AsyncRegistrationFunction<?> asyncRegistrationFunction, Boolean isAop){
         final Class<?> referenceClass = asyncRegistrationFunction.getReferenceClass();
         final String qualifier = (asyncRegistrationFunction.getQualifier().isEmpty()) ? "default" : asyncRegistrationFunction.getQualifier();
         final ExecutorService executorService = (asyncRegistrationFunction.getExecutor() != null) ? asyncRegistrationFunction.getExecutor() : mainExecutor;
         try{
             CompletableFuture<?> resolveComponentAsync = CompletableFuture.supplyAsync(() -> {
-                if(isAop(referenceClass)){
-                    Object instance = asyncRegistrationFunction.getFunction().get();
-                    if(instance == null) throw new InvalidClassRegistrationException("Intancia invalida para "+referenceClass, referenceClass);
-                    return proxyObject(instance, instance.getClass());
+                boolean shouldApplyAop = (isAop != null) ? isAop : isAopEnabled(referenceClass);
+                Object instance = asyncRegistrationFunction.getFunction().get();
+
+                if (instance == null) {
+                    throw new InvalidClassRegistrationException("Instância inválida para " + referenceClass, referenceClass);
                 }
 
-                return asyncRegistrationFunction.getFunction().get();
+                return shouldApplyAop ? proxyObject(instance, instance.getClass()) : instance;
             }, executorService);
             Supplier<?> activatorFunction = () -> {
               return new AsyncComponentStorage<>(referenceClass, qualifier, resolveComponentAsync);
@@ -1527,13 +1529,15 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
     }
 
-    private boolean isAop(Class<?> clazz){
+    private boolean isAopEnabled(Class<?> clazz){
+        if(!isAopEnabled()) return false;
         if(clazz.isAnnotationPresent(DisableAop.class) || clazz.isAnnotationPresent(Aspect.class)) return false;
 
         return aop;
     }
 
-    private boolean isAop(Method method){
+    private boolean isAopEnabled(Method method){
+        if(!isAopEnabled()) return false;
         if(method.isAnnotationPresent(DisableAop.class)) return false;
         return aop;
     }
