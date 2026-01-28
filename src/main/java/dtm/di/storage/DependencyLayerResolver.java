@@ -54,20 +54,7 @@ public class DependencyLayerResolver {
                 .filter(c -> {
                     Set<Class<?>> allDeps = dependencyGraph.getOrDefault(c, Set.of());
                     Set<Class<?>> serviceDeps = filterServiceDependencies(allDeps);
-
-                    boolean isLayer0 = serviceDeps.isEmpty();
-
-                    if (isLayer0 && log.isDebugEnabled()) {
-                        if (allDeps.isEmpty()) {
-                            log.debug("  ✓ {} → [SEM DEPENDÊNCIAS]", c.getSimpleName());
-                        } else {
-                            log.debug("  ✓ {} → [Deps não-serviço: {}]",
-                                    c.getSimpleName(),
-                                    allDeps.stream().map(Class::getSimpleName).collect(Collectors.joining(", ")));
-                        }
-                    }
-
-                    return isLayer0;
+                    return serviceDeps.isEmpty();
                 })
                 .collect(Collectors.toSet());
     }
