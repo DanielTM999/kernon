@@ -151,8 +151,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             injectExternalModules();
             filterServiceClass();
             filterExternalsBeens();
-            loaded.set(true);
             selfInjection();
+            loaded.set(true);
             registerExternalBeens(externalBeenBefore);
             loadBeens();
             registerExternalBeens(externalBeenAfter);
@@ -221,16 +221,19 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     @Override
     public <T> T getDependency(Class<T> reference) {
+        throwIfUnload();
         return getDependency(reference, getQualifierName(reference));
     }
 
     @Override
     public <T> T getDependency(Class<T> reference, String qualifier) {
+        throwIfUnload();
         return getDependency(reference, qualifier, () -> true);
     }
 
     @Override
     public <T> AsyncComponent<T> getDependencyAsync(Class<T> reference, boolean isAsyncComponent) {
+        throwIfUnload();
         return getDependencyAsync(reference, getQualifierName(reference), isAsyncComponent);
     }
 
@@ -247,27 +250,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     @Override
     public <T> List<T> getDependencyList(Class<T> reference) {
         throwIfUnload();
-        try{
-            final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(reference, Collections.emptyList());
-            return listOfDependency.stream().map(d -> {
-              try{
-                  return reference.cast(d.getDependency());
-              } catch (Exception e) {
-                  log.error(
-                          "Falha ao converter dependência. reference={}, dependencyClass={}, msg={}",
-                          reference.getName(),
-                          d.getDependency() != null ? d.getDependency().getClass().getName() : "null",
-                          e.getMessage(),
-                          e
-                  );
-                  return null;
-              }
-            }).filter(Objects::nonNull).collect(Collectors.toList());
-        }catch (Exception e){
-            log.error("Erro ao obter lista de dependências para reference={}, msg={}",
-                    reference.getName(), e.getMessage(), e);
-            return null;
-        }
+        return getDependencyListSelf(reference);
     }
 
     @Override
@@ -321,17 +304,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     @Override
     public void injectDependencies(Object instance) {
         throwIfUnload();
-        if(instance == null) return;
-
-        final Class<?> clazz = instance.getClass();
-
-        List<Field> listOfRegistration = getAllFieldWithAnnotation(clazz, Inject.class);
-
-        if(isParallelInjection(listOfRegistration.size())){
-            injectDependenciesParallel(instance, listOfRegistration);
-        }else{
-            injectDependenciesSequential(instance, listOfRegistration);
-        }
+        injectDependenciesInternal(instance);
     }
 
     @Override
@@ -872,7 +845,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 }
             }
             instance = (instance == null) ? createWithConstructor(clazz, constructors) : instance;
-            injectDependencies(Objects.requireNonNull(instance));
+            injectDependenciesInternal(Objects.requireNonNull(instance));
             Object object =  (aop) ? proxyObject(instance, clazz) : instance;
             executePostCreationMethod(clazz, object);
             return object;
@@ -895,7 +868,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 if (resolvedArgs != null) {
                     constructor.setAccessible(true);
                     Object instance = constructor.newInstance(resolvedArgs);
-                    injectDependencies(instance);
+                    injectDependenciesInternal(instance);
                     Object object =  (aop) ? proxyObject(instance, clazz) : instance;
                     executePostCreationMethod(clazz, object);
                     return object;
@@ -961,7 +934,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         final ParamtrizedObject paramtrizedObject = extractType(parameter);
 
         if(paramtrizedObject.isParametrized()){
-            return getParamObject(paramtrizedObject.getBaseClass(), paramtrizedObject.getParamClass(), parameter, false, instance);
+            return getParamObject(paramtrizedObject.getBaseClass(), paramtrizedObject.getParamType(), parameter, false, instance);
         }else{
             return getDependency(paramtrizedObject.getBaseClass(), () -> {
                 return !parameter.isAnnotationPresent(DisableInjectionWarn.class);
@@ -973,7 +946,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         final ParamtrizedObject paramtrizedObject = extractType(variable);
 
         if(paramtrizedObject.isParametrized()){
-            return getParamObject(paramtrizedObject.getBaseClass(), paramtrizedObject.getParamClass(), variable, true, instance);
+            return getParamObject(paramtrizedObject.getBaseClass(), paramtrizedObject.getParamType(), variable, true, instance);
         }else{
             return getDependency(paramtrizedObject.getBaseClass(), () -> {
                 return !variable.isAnnotationPresent(DisableInjectionWarn.class);
@@ -982,64 +955,97 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private Object getParamObject(
-            final Class<?> componentType,
-            final Class<?> genericType,
+            final Class<?> rawType,
+            final Type genericType,
             AnnotatedElement element,
-            boolean useEmenentToGetQualifier,
+            boolean useElementToGetQualifier,
             Object instance
-    ){
+    ) {
+        String qualifier = useElementToGetQualifier ? getQualifierName(element) : getQualifierName(rawType);
+        boolean warn = !element.isAnnotationPresent(DisableInjectionWarn.class);
 
-        String qualifier;
-        if(useEmenentToGetQualifier){
-            qualifier = getQualifierName(element);
-        }else{
-            qualifier = getQualifierName(genericType);
+        if (LazyDependency.class.equals(rawType)) {
+            return Lazy.of(() -> resolveNestedObject(genericType, element, qualifier, instance, warn));
         }
-        boolean disableInjectionWarn = !element.isAnnotationPresent(DisableInjectionWarn.class);
-        if(componentType.equals(LazyDependency.class)){
-            return Lazy.of(() -> {
-                try{
-                    return getDependency(genericType, qualifier, () -> disableInjectionWarn);
-                }catch (Exception e){
-                    if(disableInjectionWarn){
-                        String elementName;
 
-                        if(element instanceof Field field){
-                            elementName = field.getName();
-                        }else if(element instanceof Parameter parameter){
-                            elementName = parameter.getName();
-                        }else{
-                            elementName = genericType.getSimpleName();
-                        }
-                        String instanceClassName;
-                        if(instance instanceof String s){
-                            instanceClassName = s;
-                        }else{
-                            instanceClassName = (instance != null) ? instance.getClass().getName() : "[instancia nula]";
-                        }
-                        log.error("Erro ao carregar LAZY do elemento {} na classe {}. Causa: {}", elementName, instanceClassName, e.getMessage(), e);
-                    }
+        if (AsyncComponent.class.equals(rawType)) {
+            Type innerType = (genericType instanceof ParameterizedType pt)
+                    ? pt.getActualTypeArguments()[0]
+                    : genericType;
 
-                    return null;
-                }
-            });
-        }else if(componentType.equals(CompositeDependency.class)){
-            return new CompositeDependencyStorage<>(getDependencyList(genericType));
-        }else if(componentType.equals(AtomicReference.class)){
-            return new AtomicReference<>(getDependency(genericType, qualifier, () -> disableInjectionWarn));
-        }else if(componentType.equals(WeakReference.class)){
-            return new WeakReference<>(getDependency(genericType, qualifier, () -> disableInjectionWarn));
-        }else if(componentType.equals(SoftReference.class)){
-            return new SoftReference<>(getDependency(genericType, qualifier, () -> disableInjectionWarn));
-        } else if(componentType.equals(AsyncComponent.class)){
-            return getAsyncComponent(genericType, qualifier, () -> disableInjectionWarn);
-        }else {
-            return null;
+            validateTerminalType(rawType, innerType, instance);
+            return wrapInContainer(rawType, null, extractRawClass(innerType), qualifier, element);
+        }
+
+        Object innerObject = resolveNestedObject(genericType, element, qualifier, instance, warn);
+        return wrapInContainer(rawType, innerObject, extractRawClass(genericType), qualifier, element);
+    }
+
+    private Object resolveNestedObject(Type type, AnnotatedElement element, String qualifier, Object instance, boolean warn) {
+        if (!(type instanceof ParameterizedType paramType)) {
+            return getDependency((Class<?>) type, qualifier, () -> warn);
+        }
+
+        Class<?> nextRaw = (Class<?>) paramType.getRawType();
+        Type innerType = paramType.getActualTypeArguments()[0];
+
+        if (AsyncComponent.class.equals(nextRaw)) {
+            validateTerminalType(nextRaw, innerType, instance);
+            return wrapInContainer(nextRaw, null, (Class<?>) innerType, qualifier, element);
+        }
+
+        return getParamObject(nextRaw, innerType, element, false, instance);
+    }
+
+    private void validateTerminalType(Class<?> nextRaw, Type innerType, Object instance) {
+        if (innerType instanceof ParameterizedType) {
+            String whereError = (instance instanceof String s) ? s :
+                    (instance != null ? instance.getClass().getName() : "unknown");
+
+            throw new DependencyInjectionException(
+                    String.format("O tipo '%s' deve ser terminal. Não é permitido aninhamento dentro de AsyncComponent (Encontrado: %s) em: %s",
+                            nextRaw.getSimpleName(), innerType.getTypeName(), whereError)
+            );
         }
     }
 
+    private Class<?> extractRawClass(Type type) {
+        if (type instanceof ParameterizedType pt) {
+            return (Class<?>) pt.getRawType();
+        }
+        return (Class<?>) type;
+    }
+
+    private Object wrapInContainer(
+            Class<?> containerType,
+            Object resolvedInner,
+            Class<?> targetClass,
+            String qualifier,
+            AnnotatedElement element
+    ) {
+        boolean warn = !element.isAnnotationPresent(DisableInjectionWarn.class);
+
+        if (containerType.equals(LazyDependency.class)) {
+            return Lazy.of(() -> resolvedInner != null ? resolvedInner : getDependency(targetClass, qualifier, () -> warn));
+        }
+
+        if (containerType.equals(AsyncComponent.class)) {
+            return (resolvedInner instanceof AsyncComponent<?>) ? resolvedInner : getAsyncComponent(targetClass, qualifier, () -> warn);
+        }
+
+        if (containerType.equals(CompositeDependency.class)) {
+            List<?> list = getDependencyListSelf(targetClass);
+            return new CompositeDependencyStorage<>((list != null) ? list : List.of());
+        }
+
+        if (containerType.equals(AtomicReference.class)) return new AtomicReference<>(resolvedInner);
+        if (containerType.equals(WeakReference.class)) return new WeakReference<>(resolvedInner);
+        if (containerType.equals(SoftReference.class)) return new SoftReference<>(resolvedInner);
+
+        return resolvedInner;
+    }
+
     private <T> AsyncComponent<T> getAsyncComponent(final Class<T> reference, final String qualifier, Supplier<Boolean> showWarnIfError){
-        throwIfUnload();
         try{
             final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(AsyncComponent.class, Collections.emptyList());
             final Dependency dependencyObject = listOfDependency
@@ -1077,8 +1083,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
         if (genericType instanceof ParameterizedType paramType) {
             Type[] typeArgs = paramType.getActualTypeArguments();
-            if (typeArgs.length == 1 && typeArgs[0] instanceof Class) {
-                return new ParamtrizedObject(fieldType, (Class<?>) typeArgs[0], true);
+            if (typeArgs.length == 1 && (typeArgs[0] instanceof Class || typeArgs[0] instanceof ParameterizedType)) {
+                return new ParamtrizedObject(fieldType, typeArgs[0], true);
             }
         }
 
@@ -1091,8 +1097,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
         if (genericType instanceof ParameterizedType paramType) {
             Type[] typeArgs = paramType.getActualTypeArguments();
-            if (typeArgs.length == 1 && typeArgs[0] instanceof Class) {
-                return new ParamtrizedObject(fieldType, (Class<?>) typeArgs[0], true);
+            if (typeArgs.length == 1 && (typeArgs[0] instanceof Class || typeArgs[0] instanceof ParameterizedType)) {
+                return new ParamtrizedObject(fieldType, typeArgs[0], true);
             }
         }
 
@@ -1521,7 +1527,6 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private <T> T newInstance(Class<T> referenceClass, boolean aop) throws NewInstanceException {
-        throwIfUnload();
         try{
             return (T)createObject(referenceClass, aop);
         }catch (Exception e){
@@ -1583,7 +1588,6 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private <T> T getDependency(Class<T> reference, String qualifier, Supplier<Boolean> showWarnIfError) {
-        throwIfUnload();
         try{
             final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(reference, Collections.emptyList());
             final Dependency dependencyObject = listOfDependency.stream().filter(d -> d.getQualifier().equals(qualifier)).findFirst().orElseThrow(() -> {
@@ -1600,5 +1604,44 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             return null;
         }
     }
+
+    private <T> List<T> getDependencyListSelf(Class<T> reference) {
+        try{
+            final List<Dependency> listOfDependency = dependencyContainer.getOrDefault(reference, Collections.emptyList());
+            return listOfDependency.stream().map(d -> {
+                try{
+                    return reference.cast(d.getDependency());
+                } catch (Exception e) {
+                    log.error(
+                            "Falha ao converter dependência. reference={}, dependencyClass={}, msg={}",
+                            reference.getName(),
+                            d.getDependency() != null ? d.getDependency().getClass().getName() : "null",
+                            e.getMessage(),
+                            e
+                    );
+                    return null;
+                }
+            }).filter(Objects::nonNull).collect(Collectors.toList());
+        }catch (Exception e){
+            log.error("Erro ao obter lista de dependências para reference={}, msg={}",
+                    reference.getName(), e.getMessage(), e);
+            return null;
+        }
+    }
+
+    private void injectDependenciesInternal(Object instance) {
+        if(instance == null) return;
+
+        final Class<?> clazz = instance.getClass();
+
+        List<Field> listOfRegistration = getAllFieldWithAnnotation(clazz, Inject.class);
+
+        if(isParallelInjection(listOfRegistration.size())){
+            injectDependenciesParallel(instance, listOfRegistration);
+        }else{
+            injectDependenciesSequential(instance, listOfRegistration);
+        }
+    }
+
 
 }

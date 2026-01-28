@@ -312,7 +312,7 @@ public class AopProxyUtils extends AopUtils {
                 invokeArgs[i] = proxy;
             } else if (parameter.isAnnotationPresent(ResultProxy.class)) {
                 invokeArgs[i] = currentResult;
-            } else if (parameter.isAnnotationPresent(ReferenceIntance.class)) {
+            } else if (parameter.isAnnotationPresent(ReferenceInstance.class)) {
                 invokeArgs[i] = realInstance;
             } else if (Method.class.isAssignableFrom(paramType)) {
                 invokeArgs[i] = methodArgs;
