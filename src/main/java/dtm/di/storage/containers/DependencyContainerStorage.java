@@ -783,7 +783,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     for(int i = 0; i < parameters.length; i++){
                         final Parameter parameter = parameters[i];
                         try{
-                            args[i] = getDependecyObjectByParam(parameter, configurationInstance);
+                            args[i] = getDependecyObjectByParam(parameter, configurationInstance, method.isAnnotationPresent(DisableInjectionWarn.class));
                         }catch (Exception e){
                             log.error("Erro ao abter parametro: {} no metodo: {}, classe: {}", parameter.getName(), method.getName(), configurationsClass);
                             args[i] = null;
@@ -925,12 +925,17 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private Object getDependecyObjectByParam(Parameter parameter, Object instance){
+        return getDependecyObjectByParam(parameter, instance, false);
+    }
+
+    private Object getDependecyObjectByParam(Parameter parameter, Object instance, boolean desableAllWarn){
         final ParamtrizedObject paramtrizedObject = extractType(parameter);
 
         if(paramtrizedObject.isParametrized()){
             return getParamObject(paramtrizedObject.getBaseClass(), paramtrizedObject.getParamType(), parameter, false, instance);
         }else{
             return getDependency(paramtrizedObject.getBaseClass(), () -> {
+                if(desableAllWarn) return false;
                 return !parameter.isAnnotationPresent(DisableInjectionWarn.class);
             });
         }
