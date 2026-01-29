@@ -344,7 +344,11 @@ public class ManagedApplication {
                 Throwable t = exception.get();
                 exceptionHandlerAction(Thread.currentThread(), new InvalidBootException("Erro durante boot da aplicação", t));
             }else if(compositeErrorRef.get() != null){
-                exceptionHandlerAction(Thread.currentThread(), compositeErrorRef.get());
+                CompositeBootException compositeBootException = compositeErrorRef.get();
+                if(compositeBootException.hasMultipleErrors()){
+                    exceptionHandlerAction(Thread.currentThread(), compositeBootException);
+                }
+                exceptionHandlerAction(Thread.currentThread(), compositeBootException.getFirstError());
             }
 
         });

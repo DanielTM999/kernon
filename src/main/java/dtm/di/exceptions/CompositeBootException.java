@@ -29,6 +29,40 @@ public class CompositeBootException extends InvalidBootException {
         return Collections.unmodifiableList(errors);
     }
 
+    public boolean sizeIsMoreThan(int count) {
+        return errors.size() > count;
+    }
+
+    public boolean hasMultipleErrors() {
+        return sizeIsMoreThan(1);
+    }
+
+    public int getErrorsSize() {
+        return errors.size();
+    }
+
+    public boolean hasErrors() {
+        return !errors.isEmpty();
+    }
+
+    public boolean hasError(Class<? extends Throwable> type) {
+        return errors.stream().anyMatch(type::isInstance);
+    }
+
+    public Throwable getFirstError() {
+        if (errors.isEmpty()) return null;
+        return errors.getFirst();
+    }
+
+    public Throwable getLastError() {
+        if (errors.isEmpty()) return null;
+        return errors.getLast();
+    }
+
+    public Throwable getAnyError() {
+        return errors.stream().findAny().orElse(null);
+    }
+
     @Override
     public String getMessage() {
         if (errors.isEmpty()) {
