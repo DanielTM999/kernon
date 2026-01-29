@@ -85,6 +85,25 @@ public class ControllerAdviceHandlerInvokeService implements ExceptionHandlerInv
 
     private Throwable unwrapThrowable(Throwable throwable) {
         Throwable t = throwable;
+        while (t != null) {
+            if (!(isWrapper(throwable))) {
+                break;
+            }
+
+            Throwable cause;
+            if (t instanceof InvocationTargetException ite) {
+                cause = ite.getTargetException();
+            } else {
+                cause = t.getCause();
+            }
+
+            t = cause;
+        }
+        return t;
+    }
+
+    private Throwable unwrapAllThrowable(Throwable throwable) {
+        Throwable t = throwable;
         while (true) {
             if (
                     t instanceof ExecutionException
@@ -105,6 +124,14 @@ public class ControllerAdviceHandlerInvokeService implements ExceptionHandlerInv
         }
         return t;
     }
+
+    private boolean isWrapper(Throwable throwable){
+        return
+                throwable instanceof ExecutionException ||
+                throwable instanceof InvocationTargetException ||
+                throwable.getClass() == RuntimeException.class;
+    }
+
 
     private Object[] resolveMethodArguments(Method method, Thread thread, Throwable throwable) {
         Class<?>[] paramTypes = method.getParameterTypes();
