@@ -103,4 +103,8 @@ public interface DependencyContainerGetter {
      * @return conjunto de classes carregadas
      */
     Set<Class<?>> getLoadedSystemClasses();
+
+    boolean hasDependecy(Class<?> referenceClass);
+
+    boolean hasDependecy(Class<?> referenceClass, String qualifier);
 }

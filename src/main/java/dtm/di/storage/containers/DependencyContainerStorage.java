@@ -320,6 +320,25 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     @Override
+    public boolean hasDependecy(Class<?> referenceClass) {
+        if(referenceClass == null) return false;
+        return hasDependecy(referenceClass, getQualifierName(referenceClass));
+    }
+
+    @Override
+    public boolean hasDependecy(Class<?> referenceClass, String qualifier) {
+        throwIfUnload();
+        if(referenceClass == null) return false;
+        if(qualifier == null || qualifier.isEmpty()) return false;
+        try{
+            final Map<String, Dependency> listOfDependency = getDependencyMap(referenceClass);
+            return listOfDependency.containsKey(qualifier);
+        }catch (Exception ignored){
+            return false;
+        }
+    }
+
+    @Override
     public void registerDependency(Object dependency, String qualifier) throws InvalidClassRegistrationException {
         registerObject(dependency, qualifier);
     }
