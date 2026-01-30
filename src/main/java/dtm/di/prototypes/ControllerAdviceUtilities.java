@@ -9,7 +9,11 @@ import java.util.concurrent.TimeUnit;
 
 public final class ControllerAdviceUtilities {
 
-    private static final ExecutorService EXECUTOR_SERVICE = Executors.newSingleThreadExecutor();
+    private static final ExecutorService EXECUTOR_SERVICE = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "ControllerAdviceUtilities-Worker-"+ System.currentTimeMillis());
+        t.setDaemon(true);
+        return t;
+    });
 
     public static void callOnLoad(ThrowableAction throwableAction){
         EXECUTOR_SERVICE.execute(() -> {
