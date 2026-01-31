@@ -26,6 +26,7 @@ import dtm.di.storage.lazy.ParamtrizedObject;
 import dtm.discovery.core.ClassFinder;
 import dtm.discovery.core.ClassFinderConfigurations;
 import dtm.discovery.finder.ClassFinderService;
+import dtm.discovery.finder.simple.ClassFinderProjectService;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.Setter;
@@ -121,7 +122,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         this.mainVirtualExecutor = Executors.newThreadPerTaskExecutor(vFactory);
         this.dependencyContainer = new ConcurrentHashMap<>();
         this.loaded = new AtomicBoolean(false);
-        this.classFinder = new ClassFinderService();
+        this.classFinder = new ClassFinderProjectService();
         this.childrenRegistration = false;
         this.injectionStrategy = new AtomicReference<>(InjectionStrategy.ADAPTIVE);
         this.foldersToLoad = new ArrayList<>();
