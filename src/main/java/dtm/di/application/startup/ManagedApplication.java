@@ -447,7 +447,11 @@ public class ManagedApplication {
             EnableSchedule enableSchedule = bootableClass.getAnnotation(EnableSchedule.class);
             int numThreads = (enableSchedule.threads() > 1) ? enableSchedule.threads() : 2;
 
-            scheduledExecutorService = new ScheduledThreadPoolExecutor(numThreads);
+            scheduledExecutorService = new ScheduledThreadPoolExecutor(numThreads, r -> {
+                Thread thread = new Thread(r, "App-Scheduler-Worker");
+                thread.setDaemon(true);
+                return thread;
+            });
         }
     }
 
