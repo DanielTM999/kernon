@@ -19,6 +19,7 @@ import dtm.di.exceptions.CompositeBootException;
 import dtm.di.exceptions.InvalidBootThreadAcessEsception;
 import dtm.di.exceptions.NewInstanceException;
 import dtm.di.exceptions.boot.InvalidBootException;
+import dtm.di.prototypes.ThrowableAction;
 import dtm.di.storage.StaticContainer;
 import dtm.di.storage.containers.DependencyContainerStorage;
 import dtm.di.storage.handler.ControllerAdviceHandlerInvokeService;
@@ -136,6 +137,14 @@ public class ManagedApplication {
         });
 
         composite.addError(throwable);
+    }
+
+    public static void executeInMainContext(ThrowableAction action){
+        try {
+            action.run();
+        } catch (Throwable t) {
+            exceptionHandlerAction(Thread.currentThread(), t);
+        }
     }
 
     private static Class<?> getMainClass(){
@@ -364,8 +373,8 @@ public class ManagedApplication {
                     }catch (Exception e){
                         Throwable rootCause = getRootCause(e);
                         logError("Erro ao executar schedule {} na classe {}: {}", clazz.getName(), rootCause.getMessage(), rootCause);
+                        exceptionHandlerAction(Thread.currentThread(), rootCause);
                     }
-
                 }
             });
         }
