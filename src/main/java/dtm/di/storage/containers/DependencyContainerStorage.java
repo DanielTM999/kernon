@@ -25,7 +25,6 @@ import dtm.di.storage.lazy.Lazy;
 import dtm.di.storage.lazy.ParamtrizedObject;
 import dtm.discovery.core.ClassFinder;
 import dtm.discovery.core.ClassFinderConfigurations;
-import dtm.discovery.finder.ClassFinderService;
 import dtm.discovery.finder.simple.ClassFinderProjectService;
 import lombok.Getter;
 import lombok.NonNull;
@@ -441,6 +440,14 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private void loadBeen(ServiceBean been, final Set<Class<?>> registeringClasses, String qualifier) throws InvalidClassRegistrationException{
+        if(hasMetaAnnotation(been.getClazz(), Async.class)){
+            loadAsyncBeen(been, registeringClasses, qualifier);
+        }else{
+            loadDefaultBeen(been, registeringClasses, qualifier);
+        }
+    }
+
+    private void loadDefaultBeen(ServiceBean been, final Set<Class<?>> registeringClasses, String qualifier) throws InvalidClassRegistrationException{
         final Class<?> dependency = been.getClazz();
 
         try {
@@ -449,6 +456,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(dependency, qualifier, childrenRegistration);
 
             boolean singleton = isSingleton(dependency);
+
+
+
             DependencyObject dependencyObject = singleton
                    ? DependencyObject.builder()
                             .dependencyClass(dependency)
@@ -481,6 +491,51 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             );
         }
     }
+
+    private void loadAsyncBeen(ServiceBean been, final Set<Class<?>> registeringClasses, String qualifier) throws InvalidClassRegistrationException{
+        final Class<?> dependency = been.getClazz();
+
+        try {
+            if (dependencyContainer.containsKey(dependency)) return;
+            validRegistration(dependency, registeringClasses);
+
+            final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(AsyncComponent.class, qualifier, dependency);
+            if(mapOfDependency.values().stream().anyMatch(d -> d.getDependencyClass().equals(dependency))){
+                return;
+            }
+
+            CompletableFuture<?> resolveComponentAsync = CompletableFuture.supplyAsync(() -> {
+                boolean shouldApplyAop = been.isAop();
+                Object instance = createObject(dependency, been.isAop());
+
+                if (instance == null) {
+                    throw new InvalidClassRegistrationException("Instância inválida para " + dependency, dependency);
+                }
+
+                return shouldApplyAop ? proxyObject(instance, instance.getClass()) : instance;
+            }, mainExecutor);
+
+            Supplier<?> activatorFunction = () -> new AsyncComponentStorage<>(dependency, qualifier, resolveComponentAsync);
+
+            DependencyObject dependencyObject = new DependencyObject(dependency, qualifier, false, activatorFunction, activatorFunction);
+
+            registerInContainer(
+                    mapOfDependency,
+                    dependency,
+                    dependencyObject,
+                    qualifier
+            );
+        }catch (Exception e) {
+            log.error("Falha ao registrar a dependência: {}", dependency.getName(), e);
+            throw new InvalidClassRegistrationException(
+                    "Erro ao criar a dependencia: " + dependency+ " ==> causa: "+e.getMessage(),
+                    dependency,
+                    e
+            );
+        }
+    }
+
+
 
     private void registerAutoInject(@NonNull Class<?> clazz, final Set<Class<?>> registeringClasses) throws InvalidClassRegistrationException{
         List<Class<?>> listOfRegistration = Arrays.stream(clazz.getDeclaredFields())

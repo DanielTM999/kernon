@@ -8,8 +8,6 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 
 public interface AsyncComponent<T> extends ComponentActionRegistry<T>{
-
     @NonNull
     AsyncResult<T> getAsync();
-
 }
