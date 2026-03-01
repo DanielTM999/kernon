@@ -8,10 +8,7 @@ import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
 import dtm.di.core.InjectionStrategy;
 import dtm.di.exceptions.*;
-import dtm.di.prototypes.CompositeDependency;
-import dtm.di.prototypes.Dependency;
-import dtm.di.prototypes.LazyDependency;
-import dtm.di.prototypes.RegistrationFunction;
+import dtm.di.prototypes.*;
 import dtm.di.prototypes.async.AsyncComponent;
 import dtm.di.prototypes.async.AsyncRegistrationFunction;
 import dtm.di.prototypes.proxy.ProxyFactory;
@@ -849,8 +846,6 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         try {
             Object configurationInstance = newInstance(configurationsClass, false);
             for (Method method : methodsList) {
-                Object result = null;
-
                 Parameter[] parameters = method.getParameters();
                 Object[] args = new Object[parameters.length];
 
@@ -872,29 +867,43 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     method.setAccessible(true);
                 }
 
+                ThrowableAction action = () -> {
+                    Object result = method.invoke(configurationInstance, args);
 
-                result = method.invoke(configurationInstance, args);
+                    if(result != null){
+                        String qualifier = getQualifierName(method);
+                        boolean singleton = isSingletonBeen(method);
+                        if(singleton){
 
-                if(result != null){
-                    String qualifier = getQualifierName(method);
-                    boolean singleton = isSingletonBeen(method);
-                    if(singleton){
+                            if(result instanceof AsyncRegistrationFunction<?> asyncRegistrationFunction){
+                                registerObjectFunction(asyncRegistrationFunction, isAopEnabled(method));
+                            }else if(result instanceof RegistrationFunction<?> registrationFunction){
+                                registerObjectFunction(registrationFunction, isAopEnabled(method));
+                            }else{
+                                boolean aop = (isAopEnabled(method) && isAopEnabled(result.getClass()));
+                                registerObject(result, qualifier, aop);
+                            }
 
-                        if(result instanceof AsyncRegistrationFunction<?> asyncRegistrationFunction){
-                            registerObjectFunction(asyncRegistrationFunction, isAopEnabled(method));
-                        }else if(result instanceof RegistrationFunction<?> registrationFunction){
-                            registerObjectFunction(registrationFunction, isAopEnabled(method));
-                        }else{
-                            boolean aop = (isAopEnabled(method) && isAopEnabled(result.getClass()));
-                            registerObject(result, qualifier, aop);
+                        }else {
+                            registerExternalBeenNoSinglenton(result, method, qualifier);
                         }
-
-                    }else {
-                        registerExternalBeenNoSinglenton(result, method, qualifier);
                     }
+                };
+
+                if(method.isAnnotationPresent(Async.class)){
+                    CompletableFuture.runAsync(() -> {
+                        try{
+                            action.run();
+                        } catch (Throwable e) {
+                            throw new RuntimeException(e);
+                        }
+                    }, mainExecutor);
+                    return;
                 }
+
+                action.run();
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             throw new InvalidClassRegistrationException("Erro ao configurar: "+configurationsClass, configurationsClass, e);
         }
     }
