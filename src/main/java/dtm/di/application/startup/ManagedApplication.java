@@ -179,14 +179,14 @@ public class ManagedApplication {
             if (method.isAnnotationPresent(OnBoot.class)) {
                 int mods = method.getModifiers();
                 boolean isValid = Modifier.isStatic(mods) &&
-                        Modifier.isPublic(mods) &&
+                        (Modifier.isPublic(mods) || Modifier.isProtected(mods)) &&
                         method.getReturnType() == void.class;
 
                 if(isValid) runMethod = method;
             }else if(method.isAnnotationPresent(OnApplicationFail.class)){
                 int mods = method.getModifiers();
                 boolean isValid = Modifier.isStatic(mods) &&
-                        Modifier.isPublic(mods) &&
+                        (Modifier.isPublic(mods) || Modifier.isProtected(mods)) &&
                         method.getReturnType() == void.class;
 
                 Class<?>[] params = method.getParameterTypes();
@@ -243,7 +243,7 @@ public class ManagedApplication {
 
             int mods = method.getModifiers();
             boolean isValid = Modifier.isStatic(mods)
-                    && Modifier.isPublic(mods)
+                    && (Modifier.isPublic(mods) || Modifier.isProtected(mods))
                     && method.getReturnType() == void.class
                     && method.getParameterCount() == 0;
 
@@ -284,6 +284,7 @@ public class ManagedApplication {
         List<Method> methods = eventMethodMap.get(event);
         if (methods != null) {
             for (Method method : methods) {
+                method.setAccessible(true);
                 try {
                     logDebug("Executando hook: {}#{}", method.getDeclaringClass().getSimpleName(), method.getName());
                     method.invoke(null);
@@ -381,6 +382,7 @@ public class ManagedApplication {
     }
 
     private static void runStarterMethod(DependencyContainer dependencyContainer) throws InvocationTargetException, IllegalAccessException {
+        runMethod.setAccessible(true);
         Object[] methodArgs = new Object[runMethod.getParameterCount()];
 
         Class<?>[] parameterTypes = runMethod.getParameterTypes();
