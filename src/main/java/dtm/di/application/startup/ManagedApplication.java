@@ -334,7 +334,7 @@ public class ManagedApplication {
                     invokeHooks(LifecycleHook.Event.AFTER_CONTAINER_LOAD);
                     logLifecycle("STARTUP_METHOD", true);
                     runSchedulerAsync();
-                    runStarterMethod();
+                    runStarterMethod(dependencyContainer);
                     logLifecycle("STARTUP_METHOD", false);
                     invokeHooks(LifecycleHook.Event.AFTER_STARTUP_METHOD);
                 }
@@ -380,7 +380,7 @@ public class ManagedApplication {
         }
     }
 
-    private static void runStarterMethod() throws InvocationTargetException, IllegalAccessException {
+    private static void runStarterMethod(DependencyContainer dependencyContainer) throws InvocationTargetException, IllegalAccessException {
         Object[] methodArgs = new Object[runMethod.getParameterCount()];
 
         Class<?>[] parameterTypes = runMethod.getParameterTypes();
@@ -389,6 +389,8 @@ public class ManagedApplication {
                 methodArgs[i] = getCurrentDependencyContainer();
             } else if (parameterTypes[i].equals(String[].class)) {
                 methodArgs[i] = lauchArgsRef.get();
+            }else{
+                methodArgs[i] = dependencyContainer.getDependency(parameterTypes[i]);
             }
         }
         runMethod.invoke(null, methodArgs);
