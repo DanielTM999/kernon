@@ -246,17 +246,22 @@ public class ManagedApplication {
             int mods = method.getModifiers();
             boolean isValid = Modifier.isStatic(mods)
                     && (Modifier.isPublic(mods) || Modifier.isProtected(mods))
-                    && method.getReturnType() == void.class
-                    && method.getParameterCount() == 0;
+                    && method.getReturnType() == void.class;
 
             if (!isValid) {
-                logWarn("@LifecycleHook ignorado (deve ser public static void sem args): {}#{}", method.getDeclaringClass().getName(), method.getName());
+                logWarn("@LifecycleHook ignorado: {}#{}", method.getDeclaringClass().getName(), method.getName());
                 continue;
             }
 
             LifecycleHook hook = method.getAnnotation(LifecycleHook.class);
             LifecycleHook.Event event = hook.value();
-            int order =  hook.order();
+
+            if(event == LifecycleHook.Event.BEFORE_ALL && method.getParameterCount() > 0){
+                logWarn("@LifecycleHook(BEFORE_ALL) ignorado (não pode ter argumentos): {}#{}", method.getDeclaringClass().getName(), method.getName());
+                continue;
+            }
+
+            int order = hook.order();
 
             Map<Method, Integer> methodMap = hookMap.computeIfAbsent(event, k -> new HashMap<>());
 
@@ -284,12 +289,29 @@ public class ManagedApplication {
     private static void invokeHooks(LifecycleHook.Event event) {
         logInfo("Invocando hooks para o evento {}", event);
         List<Method> methods = eventMethodMap.get(event);
+        DependencyContainer dependencyContainer = getDependencyContainer();
         if (methods != null) {
             for (Method method : methods) {
                 method.setAccessible(true);
                 try {
                     logDebug("Executando hook: {}#{}", method.getDeclaringClass().getSimpleName(), method.getName());
-                    method.invoke(null);
+
+                    if(event ==  LifecycleHook.Event.BEFORE_ALL){
+                        method.invoke(null);
+                    }else{
+                        Class<?>[] parameterTypes = method.getParameterTypes();
+                        Object[] methodArgs = new Object[parameterTypes.length];
+                        for (int i = 0; i < parameterTypes.length; i++) {
+                            if(parameterTypes[i].equals(DependencyContainer.class)){
+                                methodArgs[i] = getCurrentDependencyContainer();
+                            } else if (parameterTypes[i].equals(String[].class)) {
+                                methodArgs[i] = launchArgsRef.get();
+                            }else{
+                                methodArgs[i] = dependencyContainer.getDependency(parameterTypes[i]);
+                            }
+                        }
+                        method.invoke(null, methodArgs);
+                    }
                     logDebug("Hook executado com sucesso: {}#{}", method.getDeclaringClass().getSimpleName(), method.getName());
                 } catch (Exception e) {
                     Throwable rootCause = getRootCause(e);
@@ -385,9 +407,9 @@ public class ManagedApplication {
 
     private static void runStarterMethod(DependencyContainer dependencyContainer) throws InvocationTargetException, IllegalAccessException {
         runMethod.setAccessible(true);
-        Object[] methodArgs = new Object[runMethod.getParameterCount()];
 
         Class<?>[] parameterTypes = runMethod.getParameterTypes();
+        Object[] methodArgs = new Object[parameterTypes.length];
         for (int i = 0; i < parameterTypes.length; i++) {
             if(parameterTypes[i].equals(DependencyContainer.class)){
                 methodArgs[i] = getCurrentDependencyContainer();
