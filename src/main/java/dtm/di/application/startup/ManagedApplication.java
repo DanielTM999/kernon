@@ -54,9 +54,10 @@ public class ManagedApplication {
     private final static AtomicReference<Thread.UncaughtExceptionHandler> uncaughtExceptionHandler = new AtomicReference<>();
     private final static AtomicReference<ExceptionHandlerInvoker> handlerInvoker = new AtomicReference<>();
     private final static AtomicReference<DependencyContainer> dependencyContainerRef = new AtomicReference<>();
-    private final static AtomicReference<String[]> lauchArgsRef = new AtomicReference<>(new String[0]);
+    private final static AtomicReference<String[]> launchArgsRef = new AtomicReference<>(new String[0]);
     private final static AtomicReference<ExceptionHandlerInvoker> userControllerAdvice = new AtomicReference<>();
     private final static AtomicBoolean controllerAdviceScannerIsLoad = new AtomicBoolean(false);
+    private static final AtomicBoolean shuttingDownAddRef = new AtomicBoolean(false);
 
 
     public static void doRun(){
@@ -72,7 +73,7 @@ public class ManagedApplication {
     }
 
     public static void doRun(boolean log, String[] args){
-        lauchArgsRef.set(args);
+        launchArgsRef.set(args);
         uncaughtExceptionHandler.set(Thread.getDefaultUncaughtExceptionHandler());
         handlerInvoker.set(getDefaultExceptionHandlerInvoker());
         setExceptionHandler();
@@ -109,6 +110,7 @@ public class ManagedApplication {
         aopEnable = aopIsEnable();
         logInfo("AOP: {}", ((aopEnable) ? "Habilitado" : "Desativado com @DisableAop"));
 
+        addGracefulShutdown();
         runAsync();
         logInfo("doRun() finalizado");
     }
@@ -390,7 +392,7 @@ public class ManagedApplication {
             if(parameterTypes[i].equals(DependencyContainer.class)){
                 methodArgs[i] = getCurrentDependencyContainer();
             } else if (parameterTypes[i].equals(String[].class)) {
-                methodArgs[i] = lauchArgsRef.get();
+                methodArgs[i] = launchArgsRef.get();
             }else{
                 methodArgs[i] = dependencyContainer.getDependency(parameterTypes[i]);
             }
@@ -648,6 +650,33 @@ public class ManagedApplication {
         };
     }
 
+    private static void addGracefulShutdown() {
+        if (!shuttingDownAddRef.compareAndSet(false, true))return;
+
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            logLifecycle("SHUTDOWN_START", true);
+
+            try {
+                invokeHooks(LifecycleHook.Event.ON_CLOSE);
+                stopSchedulerGracefully();
+
+                DependencyContainer dependencyContainer = dependencyContainerRef.get();
+                if(dependencyContainer != null){
+                    dependencyContainer.unload();
+                }
+            } catch (Exception e) {
+                logError("Erro durante graceful shutdown: {}", e.getMessage(), e);
+            } finally {
+                logLifecycle("SHUTDOWN_COMPLETE", false);
+            }
+
+        }, "GracefulShutdownHook"));
+
+    }
+
+    private static void stopSchedulerGracefully(){
+        scheduledExecutorService.shutdown();
+    }
 
     private static void defineControllerAdviceAsync(){
         ExecutorService executor = Executors.newSingleThreadExecutor(runnable -> {

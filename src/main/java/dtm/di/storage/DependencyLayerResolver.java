@@ -116,7 +116,7 @@ public class DependencyLayerResolver {
 
         for (Class<?> dep : deps) {
             if (dep.equals(target) && path.size() > 1) {
-                return new ArrayList<>(path);  // Ciclo encontrado!
+                return new ArrayList<>(path);
             }
 
             List<Class<?>> result = findCycleRecursive(

@@ -50,6 +50,7 @@ public @interface LifecycleHook {
         BEFORE_ALL,
         AFTER_CONTAINER_LOAD,
         AFTER_STARTUP_METHOD,
-        AFTER_ALL
+        AFTER_ALL,
+        ON_CLOSE
     }
 }
