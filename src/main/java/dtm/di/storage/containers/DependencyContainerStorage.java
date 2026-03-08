@@ -930,6 +930,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }catch (Exception e) {
             log.error("Erro ao criar instância para a classe: {}", clazz.getName(), e);
             String message = "Erro ao criar instância "+clazz+" ==> cause: "+e.getMessage();
+            if(e instanceof NewInstanceException instanceException){
+                throw instanceException;
+            }
             throw new NewInstanceException(message, clazz);
         }
     }
@@ -997,13 +1000,24 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     .toArray();
 
             return chosenConstructor.newInstance(args);
-        }catch (Exception e){
+        }catch (InvocationTargetException e) {
+            Throwable cause = e.getTargetException();
+            throw new NewInstanceException(
+                    "Constructor of " + clazz.getName() + " threw an exception: " + cause.getMessage(),
+                    clazz,
+                    cause
+            );
+        } catch (Exception e){
             log.error("Falha ao criar instância de {} com construtor. Tentando fallback sem construtor. Erro: {}", clazz.getName(), e.getMessage(), e);
             try{
                 return createWithOutConstructor(clazz);
             }catch (Exception ex){
                 log.error("Falha ao criar instância de {} até mesmo via fallback. Erro: {}", clazz.getName(), ex.getMessage(), ex);
-                return null;
+                throw new NewInstanceException(
+                        "Failed to create instance of " + clazz.getName() + " even using fallback constructor.",
+                        clazz,
+                        ex
+                );
             }
         }
     }
