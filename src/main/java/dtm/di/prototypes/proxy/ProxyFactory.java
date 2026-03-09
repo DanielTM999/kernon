@@ -16,13 +16,14 @@ import net.bytebuddy.matcher.ElementMatchers;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.util.Collections;
 import java.util.Map;
+import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class ProxyFactory {
 
-    private static final Map<Class<?>, Class<?>> proxyCache = new ConcurrentHashMap<>();
-
+    private static final Map<Class<?>, Class<?>> proxyCache = Collections.synchronizedMap(new WeakHashMap<>());
     private final DependencyContainer dependencyContainer;
     private final Object instance;
     private final Class<?> clazz;
@@ -68,7 +69,7 @@ public class ProxyFactory {
                     .make()) {
 
                 return unloaded
-                        .load(ProxyObject.class.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
+                        .load(cls.getClassLoader(), ClassLoadingStrategy.Default.WRAPPER)
                         .getLoaded();
 
             } catch (Exception e) {
