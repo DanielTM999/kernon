@@ -97,6 +97,7 @@ public class ControllerAdviceHandlerInvokeService implements ExceptionHandlerInv
                 cause = t.getCause();
             }
 
+            if(cause == null) break;
             t = cause;
         }
         return t;
