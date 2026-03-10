@@ -299,6 +299,16 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     @Override
+    public <T> T newInstance(Class<T> referenceClass, Boolean aop, Object... contructorArgs) throws NewInstanceException {
+        throwIfUnload();
+        try{
+            return (T)createObject(referenceClass, ((aop != null)? aop : isAopEnabled(referenceClass)) , contructorArgs);
+        }catch (Exception e){
+            throw new NewInstanceException(e.getMessage(), referenceClass, e);
+        }
+    }
+
+    @Override
     public void injectDependencies(Object instance) {
         throwIfUnload();
         injectDependenciesInternal(instance);

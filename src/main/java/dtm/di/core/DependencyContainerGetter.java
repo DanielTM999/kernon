@@ -84,6 +84,20 @@ public interface DependencyContainerGetter {
     <T> T newInstance(Class<T> referenceClass, Object... contructorArgs) throws NewInstanceException;
 
     /**
+     * Cria uma nova instância da classe especificada, utilizando os argumentos do construtor fornecidos,
+     * e injetando as dependências automaticamente.
+     *
+     * @param <T>            tipo da instância a ser criada
+     * @param referenceClass  classe da instância a ser criada
+     * @param aop  classe da instância a ser criada deve ter aop se or nullo o injetor decide
+     * @param contructorArgs  argumentos a serem passados para o construtor
+     * @return nova instância da classe com dependências injetadas
+     * @throws NewInstanceException se ocorrer erro na criação da instância
+     */
+    <T> T newInstance(Class<T> referenceClass, Boolean aop, Object... contructorArgs) throws NewInstanceException;
+
+
+    /**
      * Injeta as dependências necessárias na instância fornecida.
      *
      * @param instance objeto onde as dependências serão injetadas
