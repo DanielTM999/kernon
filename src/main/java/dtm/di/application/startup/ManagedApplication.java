@@ -579,13 +579,16 @@ public class ManagedApplication {
                 try{
                     handlerInvoker.get().invoke(thread, throwable);
                 }catch (Exception e){
+                    logError("invalid ExceptionHandlerInvoker", e);
                     executeDefalutThreadExceptionHandler(thread, e);
                 }
             }
         } catch (Exception exBase) {
+            logError("invalid ExceptionHandlerInvoker", exBase);
             try{
                 handlerInvoker.get().invoke(thread, throwable);
             }catch (Exception e){
+                logError("invalid ExceptionHandlerInvoker", e);
                 executeDefalutThreadExceptionHandler(thread, e);
             }
         }
