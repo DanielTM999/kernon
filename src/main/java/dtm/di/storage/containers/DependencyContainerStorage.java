@@ -1603,6 +1603,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private void invokeMethod(Method method, Object instance) throws Exception{
         int paramCount = method.getParameterCount();
 
+        method.setAccessible(true);
         if(paramCount > 0){
             invokeMethodNoArgs(method, instance);
             return;
