@@ -253,6 +253,205 @@ public class AppMain {
 - Se `@EnableSchedule` não estiver presente, nenhuma tarefa será executada, mesmo com `@Schedule`.
 
 
+# Resolução de Dependências Ambíguas (`@Primary`)
+
+Quando há **mais de uma implementação** do mesmo tipo no container e nenhum
+`@Qualifier` é especificado na injeção, o bean anotado com `@Primary` é o
+escolhido. Sem `@Primary`, o lookup mantém a regra atual (qualifier `"default"`).
+
+```java
+import dtm.di.annotations.*;
+
+public interface PaymentGateway {
+    void charge(long cents);
+}
+
+@Service
+@Primary
+public class StripeGateway implements PaymentGateway {
+    public void charge(long cents) { /* ... */ }
+}
+
+@Service
+@Qualifier("paypal")
+public class PaypalGateway implements PaymentGateway {
+    public void charge(long cents) { /* ... */ }
+}
+
+@Service
+public class CheckoutService {
+
+    @Inject
+    private PaymentGateway gateway; // resolve para StripeGateway (@Primary)
+
+    @Inject
+    @Qualifier("paypal")
+    private PaymentGateway paypalGateway; // resolve para PaypalGateway
+}
+```
+
+### Onde pode ser usado
+- Em classes anotadas com `@Component`/`@Service`.
+- Em métodos de fábrica dentro de `@Configuration` (junto com `@BeanDefinition`).
+
+### Regras
+- Se **nenhum** bean tiver `@Primary` e houver ambiguidade, a resolução continua
+  selecionando o entry registrado sob qualifier `"default"` — comportamento
+  retrocompatível.
+- Se mais de um bean estiver marcado com `@Primary`, vence o **primeiro encontrado**
+  na iteração do mapa. Considere isso um erro de design e prefira `@Qualifier` para
+  desambiguar explicitamente.
+
+
+# `@PreDestroy` — Liberação de Recursos
+
+Simétrico a `@PostCreation`. Métodos anotados são executados antes do bean ser
+descartado pelo container — durante `unload()` ou via shutdown hook do processo.
+
+```java
+import dtm.di.annotations.*;
+
+@Service
+public class ConnectionPool {
+
+    private DataSource dataSource;
+
+    @PostCreation
+    public void open() {
+        this.dataSource = createDataSource();
+    }
+
+    @PreDestroy(order = 10) // maior order roda primeiro
+    public void close() {
+        if (dataSource != null) dataSource.close();
+    }
+}
+```
+
+### Características
+- O método deve ser **público**, **sem parâmetros**, retorno **`void`** e **não estático**.
+- Maior `order` executa primeiro (ordem reversa em relação a `@PostCreation` —
+  reflete a semântica natural de teardown: feche o que foi aberto por último).
+- Exceções são logadas e ignoradas — o shutdown nunca para pela metade.
+- Disparado automaticamente pelo shutdown hook do `ManagedApplication`.
+  Em uso não-gerenciado, chame `dependencyContainer.unload()` no fim do programa.
+
+> **Limitação inerente da JVM**: `kill -9` ou crash não dispara shutdown hook.
+> Não use `@PreDestroy` para garantias de durabilidade — apenas para liberação ordenada.
+
+
+# `ApplicationRunner` — Tarefas Pós-Boot
+
+Beans que implementam `ApplicationRunner` são executados após o `@OnBoot`,
+recebendo os argumentos da linha de comando. Útil para migrações, importação
+de dados, jobs únicos de inicialização — sem precisar transformar tudo em
+método estático no bootable.
+
+```java
+import dtm.di.annotations.*;
+import dtm.di.application.ApplicationRunner;
+
+@Service
+public class DataSeederRunner implements ApplicationRunner {
+
+    @Inject
+    private UserRepository users;
+
+    @Override
+    public void run(String[] args) throws Exception {
+        if (args.length > 0 && "--seed".equals(args[0])) {
+            users.save(new User("admin"));
+        }
+    }
+}
+```
+
+### Comportamento
+- Executado **após** o método `@OnBoot` e **antes** do hook `AFTER_STARTUP_METHOD`.
+- Múltiplos runners executam na ordem em que o container os entrega.
+- Exceções propagam para o handler de erro de boot (mesmo caminho de `@OnApplicationFail`).
+
+
+# Eventos (`EventPublisher` + `@EventListener`)
+
+Sistema de pub/sub para comunicação entre beans em tempo de execução —
+complementar aos `@LifecycleHook` (que são apenas eventos do ciclo de boot).
+
+### Publicar
+
+Injete o `EventPublisher` em qualquer bean:
+
+```java
+import dtm.di.annotations.*;
+import dtm.di.event.EventPublisher;
+
+public record OrderPlacedEvent(String orderId, long amountCents) {}
+
+@Service
+public class OrderService {
+
+    @Inject
+    private EventPublisher events;
+
+    public void place(Order order) {
+        // ...persistir...
+        events.publish(new OrderPlacedEvent(order.id(), order.total()));
+    }
+}
+```
+
+### Reagir
+
+Métodos anotados com `@EventListener` em qualquer bean do container recebem
+eventos compatíveis com o tipo do parâmetro (suporta herança e interfaces):
+
+```java
+import dtm.di.annotations.*;
+import dtm.di.annotations.event.EventListener;
+
+@Service
+public class EmailNotifier {
+
+    @EventListener
+    public void onOrderPlaced(OrderPlacedEvent event) {
+        // notifica cliente — síncrono na thread do publisher
+    }
+
+    @EventListener(async = true, order = 10)
+    public void auditAsync(OrderPlacedEvent event) {
+        // roda no executor do container, não bloqueia o publisher
+    }
+}
+```
+
+### Características
+| Atributo                 | Comportamento                                                            |
+|--------------------------|---------------------------------------------------------------------------|
+| Match de tipo            | `parametro.isAssignableFrom(evento.getClass())` — herança e interfaces    |
+| `async = false` (padrão) | Executa síncrono na thread chamadora; exceções propagam ao publisher      |
+| `async = true`           | Executa no executor compartilhado do container; exceções são logadas      |
+| `order`                  | Menor `order` executa antes (apenas em modo síncrono)                     |
+| Requisitos do método     | Não estático, exatamente 1 parâmetro, retorno `void`                      |
+
+### Sobrescrever o publisher
+
+O `EventPublisher` padrão é registrado automaticamente no fim do `load()`. Se quiser
+substituí-lo (ex.: integrar com um message broker), basta registrar o seu via
+`@Configuration` antes — o framework não sobrescreve um `EventPublisher` já presente.
+
+```java
+@Configuration
+public class EventConfig {
+
+    @BeanDefinition(proxyType = BeanDefinition.ProxyType.STATIC)
+    @Service
+    public EventPublisher customPublisher() {
+        return new KafkaBackedPublisher(/* ... */);
+    }
+}
+```
+
+
 # Configurações 
 - O framework utiliza a anotação `@Configuration` para configrar os gerenciamentos
 - A resolução de dependências (em métodos, campos ou construtores) segue a seguinte ordem:

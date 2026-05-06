@@ -2,6 +2,7 @@ package dtm.di.prototypes.proxy;
 
 import dtm.di.annotations.aop.NotIntercept;
 import dtm.di.annotations.aop.ProxyInstance;
+import dtm.di.common.reflection.ReflectionCache;
 import dtm.di.core.DependencyContainer;
 import dtm.di.prototypes.ProxyObject;
 import lombok.NonNull;
@@ -99,7 +100,8 @@ public class ProxyFactory {
     }
 
     private Constructor<?> getConstructorWithLeastParameters(Class<?> clazz) {
-        Constructor<?>[] constructors = clazz.getDeclaredConstructors();
+        java.util.List<Constructor<?>> cached = ReflectionCache.constructors(clazz);
+        Constructor<?>[] constructors = cached.toArray(new Constructor<?>[0]);
 
         if (constructors.length == 0) {
             try {

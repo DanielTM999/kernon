@@ -4,6 +4,9 @@ import dtm.di.annotations.*;
 import dtm.di.annotations.aop.Aspect;
 import dtm.di.annotations.aop.DisableAop;
 import dtm.di.common.AnnotationsUtils;
+import dtm.di.common.reflection.ReflectionCache;
+import dtm.di.event.DefaultEventPublisher;
+import dtm.di.event.EventPublisher;
 import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
 import dtm.di.core.InjectionStrategy;
@@ -153,13 +156,33 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             registerExternalBeens(externalBeenBefore);
             loadBeens();
             registerExternalBeens(externalBeenAfter);
+            registerEventPublisher();
         }catch (Exception e){
            throw new UnloadError("load error", e);
         }
     }
 
+    /**
+     * Registra o {@link EventPublisher} padrão no container e dispara o scan de
+     * {@code @EventListener}. Idempotente: se um EventPublisher já foi registrado
+     * (via Configuration ou registro manual), não sobrescreve.
+     */
+    private void registerEventPublisher(){
+        try{
+            Map<String, Dependency> existing = dependencyContainer.get(EventPublisher.class);
+            if(existing != null && !existing.isEmpty()) return;
+
+            DefaultEventPublisher publisher = new DefaultEventPublisher(this, mainExecutor);
+            registerObject(publisher, "default", false);
+            publisher.scan();
+        }catch (Exception e){
+            log.error("Falha ao registrar EventPublisher: {}", e.getMessage(), e);
+        }
+    }
+
     @Override
     public void unload() {
+        invokePreDestroyMethods();
         loaded.set(false);
         this.classFinderConfigurations = getFindConfigurations();
         loadedSystemClasses.clear();
@@ -168,6 +191,53 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         foldersToLoad.clear();
         externalBeenBefore.clear();
         externalBeenAfter.clear();
+    }
+
+    /**
+     * Invoca todos os métodos anotados com {@link dtm.di.annotations.PreDestroy} dos beans
+     * registrados (singleton). Erros são logados e ignorados — shutdown não pode falhar pela metade.
+     *
+     * Cada instância é destruída apenas uma vez mesmo que esteja indexada em vários slots
+     * (sub-tipo/interface), via Set de identidade.
+     */
+    private void invokePreDestroyMethods(){
+        Set<Object> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        List<Object> singletons = new ArrayList<>();
+        for(Map<String, Dependency> map : dependencyContainer.values()){
+            if(map == null) continue;
+            for(Dependency dep : map.values()){
+                if(dep == null || !dep.isSingleton()) continue;
+                Object instance;
+                try{
+                    instance = dep.getDependency();
+                }catch (Exception e){
+                    continue;
+                }
+                if(instance == null) continue;
+                if(visited.add(instance)){
+                    singletons.add(instance);
+                }
+            }
+        }
+
+        for(Object instance : singletons){
+            List<Method> destroyMethods = ReflectionCache.methodsWithAnnotation(
+                    instance.getClass(), dtm.di.annotations.PreDestroy.class);
+            if(destroyMethods.isEmpty()) continue;
+
+            List<Method> ordered = new ArrayList<>(destroyMethods);
+            ordered.sort(Comparator.<Method>comparingInt(m -> m.getAnnotation(dtm.di.annotations.PreDestroy.class).order()).reversed());
+
+            for(Method method : ordered){
+                try{
+                    if(!method.canAccess(instance)) method.setAccessible(true);
+                    method.invoke(instance);
+                }catch (Exception e){
+                    log.error("Erro ao executar @PreDestroy {}#{}: {}",
+                            instance.getClass().getName(), method.getName(), e.getMessage(), e);
+                }
+            }
+        }
     }
 
     @Override
@@ -545,7 +615,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
 
     private void registerAutoInject(@NonNull Class<?> clazz, final Set<Class<?>> registeringClasses) throws InvalidClassRegistrationException{
-        List<Class<?>> listOfRegistration = Arrays.stream(clazz.getDeclaredFields())
+        List<Class<?>> listOfRegistration = ReflectionCache.fields(clazz).stream()
                 .filter(f -> {
                     Class<?> fieldClass = f.getType();
                     return f.isAnnotationPresent(Inject.class) && !(
@@ -634,6 +704,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         if(clazz.isAnnotationPresent(Qualifier.class)){
             Qualifier qualifierAnnotation = clazz.getAnnotation(Qualifier.class);
             return (qualifierAnnotation.value() == null || qualifierAnnotation.value().isEmpty()) ? "default" : qualifierAnnotation.value();
+        } else if(clazz.isAnnotationPresent(dtm.di.annotations.Primary.class)){
+            return "$primary$:" + clazz.getName();
         } else {
             return  "default";
         }
@@ -673,15 +745,20 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private String getQualifierName(@NonNull Method beenMethod){
+        String resolved = null;
         if(beenMethod.isAnnotationPresent(Service.class)){
             Service qualifierAnnotation = beenMethod.getAnnotation(Service.class);
-            return (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
+            resolved = (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? null : qualifierAnnotation.qualifier();
         }else if(beenMethod.isAnnotationPresent(Component.class)){
             Component qualifierAnnotation = beenMethod.getAnnotation(Component.class);
-            return (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? "default" : qualifierAnnotation.qualifier();
+            resolved = (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? null : qualifierAnnotation.qualifier();
         } else if(beenMethod.isAnnotationPresent(Qualifier.class)){
             Qualifier qualifierAnnotation = beenMethod.getAnnotation(Qualifier.class);
-            return (qualifierAnnotation.value() == null || qualifierAnnotation.value().isEmpty()) ? "default" : qualifierAnnotation.value();
+            resolved = (qualifierAnnotation.value() == null || qualifierAnnotation.value().isEmpty()) ? null : qualifierAnnotation.value();
+        }
+        if(resolved != null) return resolved;
+        if(beenMethod.isAnnotationPresent(Primary.class)){
+            return "$primary$:" + beenMethod.getDeclaringClass().getName() + "#" + beenMethod.getName();
         }
         return  "default";
     }
@@ -746,14 +823,14 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private Set<Class<?>> getDependecyClassListOfClass(Class<?> clazz, Set<Class<?>> serviceLoadedClass) {
         Set<Class<?>> dependencies = new HashSet<>();
 
-        for (Field field : clazz.getDeclaredFields()) {
+        for (Field field : ReflectionCache.fields(clazz)) {
             if (field.isAnnotationPresent(Inject.class)) {
                 Class<?> fieldType = field.getType();
                 dependencies.addAll(isServiceDependency(fieldType, serviceLoadedClass, field));
             }
         }
 
-        for (Constructor<?> constructor : clazz.getDeclaredConstructors()) {
+        for (Constructor<?> constructor : ReflectionCache.constructors(clazz)) {
             for (Parameter param : constructor.getParameters()) {
                 dependencies.addAll(isServiceDependency(param.getType(), serviceLoadedClass, param));
             }
@@ -925,7 +1002,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private Object createObject(@NonNull Class<?> clazz, boolean aop){
         try {
             Object instance = null;
-            Constructor<?>[] constructors = clazz.getDeclaredConstructors();
+            Constructor<?>[] constructors = ReflectionCache.constructors(clazz).toArray(new Constructor<?>[0]);
             for (Constructor<?> constructor : constructors) {
                 if (constructor.getParameterCount() == 0) {
                     instance = createWithOutConstructor(clazz);
@@ -950,7 +1027,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private Object createObject(@NonNull Class<?> clazz, boolean aop, Object[] extraConstructorArgs){
         try {
             String ondeEstou = "Contructor of: " + clazz;
-            Constructor<?>[] constructors = clazz.getDeclaredConstructors();
+            Constructor<?>[] constructors = ReflectionCache.constructors(clazz).toArray(new Constructor<?>[0]);
             List<Parameter> failedParams = new ArrayList<>();
             for (Constructor<?> constructor : constructors) {
                 Parameter[] parameterTypes = constructor.getParameters();
@@ -1049,7 +1126,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
     }
 
-    private Object getDependecyObjectByField(Field variable, Object instance){
+    private Object getDependencyObjectByField(Field variable, Object instance){
         final ParamtrizedObject paramtrizedObject = extractType(variable);
 
         if(paramtrizedObject.isParametrized()){
@@ -1223,7 +1300,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             }
 
             if(paramtrizedObject.isParametrized()){
-                Object target = getDependecyObjectByField(variable, instance);
+                Object target = getDependencyObjectByField(variable, instance);
                 variable.set(instance, target);
             }else{
                 Object targetInstance = getObjectToInjectVariable(variable, paramtrizedObject.getBaseClass());
@@ -1255,11 +1332,49 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             }
             mapOfDependency = getDependencyMap(clazzVariable);
         }
-        Dependency dependencyObject = mapOfDependency.get(qualifierName);
+        Dependency dependencyObject = resolveWithPrimary(mapOfDependency, qualifierName);
         if(dependencyObject == null){
             throw new DependencyContainerException("Dependencia não encontrada para: "+clazzVariable);
         }
         return dependencyObject.getDependency();
+    }
+
+    /**
+     * Resolve uma dependência respeitando {@link dtm.di.annotations.Primary}.
+     *
+     * Quando o qualificador é o "default" (injeção sem {@code @Qualifier}) e há vários candidatos,
+     * a entrada anotada com {@code @Primary} vence sobre a registrada como "default".
+     * Para qualificadores explícitos, mantém o lookup direto.
+     */
+    private static final String PRIMARY_QUALIFIER_PREFIX = "$primary$:";
+
+    private Dependency resolveWithPrimary(Map<String, Dependency> map, String qualifier){
+        if(map == null || map.isEmpty()) return null;
+        boolean isDefaultLookup = qualifier == null || qualifier.isEmpty() || "default".equalsIgnoreCase(qualifier);
+        if(isDefaultLookup && map.size() > 1){
+            Dependency primary = findPrimary(map);
+            if(primary != null) return primary;
+        }
+        Dependency direct = map.get(qualifier);
+        if(direct != null) return direct;
+        if(isDefaultLookup){
+            return findPrimary(map);
+        }
+        return null;
+    }
+
+    private Dependency findPrimary(Map<String, Dependency> map){
+        for(Map.Entry<String, Dependency> entry : map.entrySet()){
+            String q = entry.getKey();
+            if(q != null && q.startsWith(PRIMARY_QUALIFIER_PREFIX)){
+                return entry.getValue();
+            }
+            Class<?> depClass = entry.getValue().getDependencyClass();
+            if(depClass != null && depClass.isAnnotationPresent(dtm.di.annotations.Primary.class)){
+                return entry.getValue();
+            }
+        }
+        return null;
     }
 
     private void registerExternalBeenNoSinglenton(@NonNull Object instance, Method method, String qualifier) throws InvalidClassRegistrationException{
@@ -1583,16 +1698,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private List<Method> getPostCreationMethod(Class<?> clazz){
-        List<Method> postCreationMethods = new ArrayList<>();
-        Class<?> clazzRoot = clazz;
-        while(clazzRoot != null){
-            postCreationMethods.addAll(
-                    Arrays.stream(clazzRoot.getDeclaredMethods())
-                            .filter(c -> c.isAnnotationPresent(PostCreation.class))
-                            .toList()
-            );
-            clazzRoot = clazzRoot.getSuperclass();
-        }
+        List<Method> postCreationMethods = new ArrayList<>(ReflectionCache.methodsWithAnnotation(clazz, PostCreation.class));
 
         postCreationMethods.sort(Comparator.comparingInt(
                 m -> m.getAnnotation(PostCreation.class).order()
@@ -1756,7 +1862,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private <T> T getDependency(Class<T> reference, String qualifier, Supplier<Boolean> showWarnIfError) {
         try{
             final Map<String, Dependency> listOfDependency = getDependencyMap(reference);
-            final Dependency dependencyObject = listOfDependency.get(qualifier);
+            final Dependency dependencyObject = resolveWithPrimary(listOfDependency, qualifier);
 
             if(dependencyObject == null){
                 throw new DependencyInjectionException("Erro ao obter dependência: reference="+reference+", qualifier="+qualifier);

@@ -5,6 +5,7 @@ import dtm.di.annotations.Component;
 import dtm.di.annotations.Inject;
 import dtm.di.annotations.aop.DisableAop;
 import dtm.di.common.AnnotationsUtils;
+import dtm.di.common.reflection.ReflectionCache;
 import dtm.di.prototypes.RegistrationFunction;
 import dtm.di.prototypes.async.AsyncComponent;
 import dtm.di.prototypes.async.AsyncRegistrationFunction;
@@ -58,13 +59,13 @@ public class BeanDependencyGraphBuilder {
     private Set<String> extractClassDependencies(Class<?> clazz) {
         Set<String> deps = new HashSet<>();
 
-        for (Field field : clazz.getDeclaredFields()) {
+        for (Field field : ReflectionCache.fields(clazz)) {
             if (field.isAnnotationPresent(Inject.class)) {
                 deps.add(field.getType().getName());
             }
         }
 
-        for (Constructor<?> constructor : clazz.getDeclaredConstructors()) {
+        for (Constructor<?> constructor : ReflectionCache.constructors(clazz)) {
             for (Parameter param : constructor.getParameters()) {
                 deps.add(param.getType().getName());
             }
@@ -74,7 +75,7 @@ public class BeanDependencyGraphBuilder {
     }
 
     private void extractBeanMethods(Class<?> configClass) {
-        for (Method method : configClass.getDeclaredMethods()) {
+        for (Method method : ReflectionCache.methods(configClass)) {
             if (!isBeanMethod(method)) {
                 continue;
             }

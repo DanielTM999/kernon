@@ -1,5 +1,7 @@
 package dtm.di.common;
 
+import dtm.di.common.reflection.ReflectionCache;
+
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -26,18 +28,7 @@ public final class AnnotationsUtils {
         Objects.requireNonNull(refClass, "refClass não pode ser null");
         Objects.requireNonNull(annotationClass, "annotationClass não pode ser null");
 
-        List<Field> injectableFields = new ArrayList<>();
-
-        while (refClass != null && refClass != Object.class) {
-            for (Field field : refClass.getDeclaredFields()) {
-                if (field.isAnnotationPresent(annotationClass)) {
-                    injectableFields.add(field);
-                }
-            }
-            refClass = refClass.getSuperclass();
-        }
-
-        return injectableFields;
+        return new ArrayList<>(ReflectionCache.fieldsWithAnnotation(refClass, annotationClass));
     }
 
     /**

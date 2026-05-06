@@ -2,6 +2,7 @@ package dtm.di.application.startup;
 
 import dtm.di.annotations.ControllerAdvice;
 import dtm.di.annotations.DependencyContainerFactory;
+import dtm.di.application.ApplicationRunner;
 import dtm.di.annotations.boot.OnApplicationFail;
 import dtm.di.annotations.handler.ExceptionHandler;
 import dtm.di.annotations.schedule.EnableSchedule;
@@ -360,6 +361,7 @@ public class ManagedApplication {
                     logLifecycle("STARTUP_METHOD", true);
                     runSchedulerAsync();
                     runStarterMethod(dependencyContainer);
+                    runApplicationRunners(dependencyContainer);
                     logLifecycle("STARTUP_METHOD", false);
                     invokeHooks(LifecycleHook.Event.AFTER_STARTUP_METHOD);
                 }
@@ -402,6 +404,23 @@ public class ManagedApplication {
                     }
                 }
             });
+        }
+    }
+
+    private static void runApplicationRunners(DependencyContainer dependencyContainer){
+        Map<Class<ApplicationRunner>, ApplicationRunner> runners = dependencyContainer.getInstancesByClass(ApplicationRunner.class);
+        if(runners == null || runners.isEmpty()) return;
+
+        String[] args = launchArgsRef.get();
+        for(ApplicationRunner runner : runners.values()){
+            try{
+                logInfo("Executando ApplicationRunner: {}", runner.getClass().getName());
+                runner.run(args);
+            }catch (Exception e){
+                Throwable rootCause = getRootCause(e);
+                logError("Erro em ApplicationRunner {}: {}", runner.getClass().getName(), rootCause.getMessage(), rootCause);
+                throw new RuntimeException(rootCause);
+            }
         }
     }
 
