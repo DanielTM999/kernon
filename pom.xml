@@ -17,6 +17,7 @@
         <classfinder.version>1.0.1</classfinder.version>
         <byte.buddy.version>1.15.10</byte.buddy.version>
         <logback.version>1.5.18</logback.version>
+        <jackson.version>2.18.2</jackson.version>
         <maven-javadoc-plugin.version>3.6.3</maven-javadoc-plugin.version>
         <maven-source-plugin.version>3.3.0</maven-source-plugin.version>
     </properties>
@@ -52,6 +53,12 @@
             <artifactId>logback-classic</artifactId>
             <version>${logback.version}</version>
             <scope>compile</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
         </dependency>
 
     </dependencies>

@@ -7,6 +7,9 @@ import dtm.di.common.AnnotationsUtils;
 import dtm.di.common.reflection.ReflectionCache;
 import dtm.di.event.DefaultEventPublisher;
 import dtm.di.event.EventPublisher;
+import dtm.di.settings.AppSettings;
+import dtm.di.settings.JsonAppSettings;
+import dtm.di.annotations.settings.Value;
 import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
 import dtm.di.core.InjectionStrategy;
@@ -154,6 +157,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             selfInjection();
             loaded.set(true);
             registerExternalBeens(externalBeenBefore);
+            registerAppSettingsIfAbsent();
             loadBeens();
             registerExternalBeens(externalBeenAfter);
             registerEventPublisher();
@@ -1294,9 +1298,15 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private void injectVariable(Field variable, Object instance){
         try{
             final ParamtrizedObject paramtrizedObject = extractType(variable);
-            
+
             if(!variable.canAccess(instance)){
                 variable.setAccessible(true);
+            }
+
+            if(variable.isAnnotationPresent(Value.class)){
+                Object resolved = resolveValueAnnotation(variable);
+                variable.set(instance, resolved);
+                return;
             }
 
             if(paramtrizedObject.isParametrized()){
@@ -1907,7 +1917,17 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
         final Class<?> clazz = instance.getClass();
 
-        List<Field> listOfRegistration = getAllFieldWithAnnotation(clazz, Inject.class);
+        List<Field> injectFields = getAllFieldWithAnnotation(clazz, Inject.class);
+        List<Field> valueFields = getAllFieldWithAnnotation(clazz, Value.class);
+
+        List<Field> listOfRegistration;
+        if(valueFields.isEmpty()){
+            listOfRegistration = injectFields;
+        }else{
+            Set<Field> dedup = new LinkedHashSet<>(injectFields);
+            dedup.addAll(valueFields);
+            listOfRegistration = new ArrayList<>(dedup);
+        }
 
         if(isParallelInjection(listOfRegistration.size())){
             injectDependenciesParallel(instance, listOfRegistration);
@@ -1916,5 +1936,93 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
     }
 
+    /**
+     * Resolve um campo anotado com {@link Value} consultando o {@link AppSettings}.
+     *
+     * <p>Para tipos primitivos/String/wrappers usa {@code getXxx(key, default)} com o
+     * {@code defaultValue()} convertido a partir da string. Para objetos, delega ao
+     * {@code getObject(key, type)} — que devolve nova instância via construtor default
+     * se a chave estiver ausente ou inválida.</p>
+     */
+    private Object resolveValueAnnotation(Field variable) {
+        Value value = variable.getAnnotation(Value.class);
+        AppSettings settings = resolveAppSettings();
+        if(settings == null){
+            log.warn("AppSettings indisponível ao resolver @Value em {}#{}",
+                    variable.getDeclaringClass().getName(), variable.getName());
+            return null;
+        }
+
+        Class<?> type = variable.getType();
+        String key = value.key();
+        String def = value.defaultValue();
+
+        if(type == String.class){
+            return settings.getString(key, def);
+        }
+        if(type == int.class || type == Integer.class){
+            return settings.getInt(key, parseInt(def, 0));
+        }
+        if(type == long.class || type == Long.class){
+            return settings.getLong(key, parseLong(def, 0L));
+        }
+        if(type == double.class || type == Double.class){
+            return settings.getDouble(key, parseDouble(def, 0d));
+        }
+        if(type == float.class || type == Float.class){
+            return (float) settings.getDouble(key, parseDouble(def, 0d));
+        }
+        if(type == boolean.class || type == Boolean.class){
+            return settings.getBoolean(key, Boolean.parseBoolean(def));
+        }
+        if(type == short.class || type == Short.class){
+            return (short) settings.getInt(key, parseInt(def, 0));
+        }
+        if(type == byte.class || type == Byte.class){
+            return (byte) settings.getInt(key, parseInt(def, 0));
+        }
+
+        return settings.getObject(key, type);
+    }
+
+    private static int parseInt(String s, int fallback){
+        if(s == null || s.isEmpty()) return fallback;
+        try { return Integer.parseInt(s.trim()); } catch (NumberFormatException e) { return fallback; }
+    }
+
+    private static long parseLong(String s, long fallback){
+        if(s == null || s.isEmpty()) return fallback;
+        try { return Long.parseLong(s.trim()); } catch (NumberFormatException e) { return fallback; }
+    }
+
+    private static double parseDouble(String s, double fallback){
+        if(s == null || s.isEmpty()) return fallback;
+        try { return Double.parseDouble(s.trim()); } catch (NumberFormatException e) { return fallback; }
+    }
+
+    private AppSettings resolveAppSettings(){
+        Map<String, Dependency> map = dependencyContainer.get(AppSettings.class);
+        if(map != null && !map.isEmpty()){
+            Object instance = map.values().iterator().next().getDependency();
+            if(instance instanceof AppSettings appSettings) return appSettings;
+        }
+        return null;
+    }
+
+    /**
+     * Registra o {@link AppSettings} padrão (lê {@code settings.json} no working dir) caso
+     * o usuário não tenha registrado o seu via {@code @Configuration}. Idempotente.
+     */
+    private void registerAppSettingsIfAbsent(){
+        try{
+            Map<String, Dependency> existing = dependencyContainer.get(AppSettings.class);
+            if(existing != null && !existing.isEmpty()) return;
+
+            JsonAppSettings settings = new JsonAppSettings();
+            registerObject(settings, "default", false);
+        }catch (Exception e){
+            log.error("Falha ao registrar AppSettings padrão: {}", e.getMessage(), e);
+        }
+    }
 
 }

@@ -487,6 +487,112 @@ public class EventConfig {
 ```
 
 
+# Settings (`AppSettings` + `@Value`)
+
+Camada de configuração externa baseada em um arquivo JSON — análogo ao
+`IConfiguration` do C# e ao `@Value` do Spring. Funciona de duas formas:
+**programática** (injetando a interface `AppSettings`) ou **declarativa**
+(anotação `@Value` em campos).
+
+## O arquivo `settings.json`
+
+Por padrão o framework lê e grava em `./settings.json` (working directory).
+No primeiro boot, se o arquivo não existir, ele é criado automaticamente —
+copiando o conteúdo de `src/main/resources/settings.json` (caso exista no
+classpath) ou começando como `{}` vazio.
+
+```json
+{
+  "text": {
+    "val": 1
+  },
+  "db": {
+    "url": "jdbc:postgresql://localhost/app",
+    "maxConnections": 20
+  }
+}
+```
+
+> Chaves em **notação de ponto** navegam pela árvore: `text.val`, `db.url`.
+
+## Modo programático: injetar `AppSettings`
+
+```java
+import dtm.di.annotations.*;
+import dtm.di.settings.AppSettings;
+
+@Service
+public class FeatureService {
+
+    @Inject
+    private AppSettings settings;
+
+    public void run() {
+        int v        = settings.getInt("text.val", 0);
+        String url   = settings.getString("db.url", "jdbc:default");
+        DbConfig db  = settings.getObject("db", DbConfig.class);
+        boolean has  = settings.has("text.val");
+    }
+}
+```
+
+| Método                                    | Comportamento                                                                |
+|-------------------------------------------|------------------------------------------------------------------------------|
+| `getString/getInt/getLong/getDouble/getBoolean(key, default)` | Retorna o `default` se a chave não existir ou for inválida.                  |
+| `getObject(key, type)`                    | Desserializa via Jackson; se ausente/erro, retorna nova instância via construtor default (ou `null` se a classe não tiver um). |
+| `has(key)`                                | `true` se a chave existir (mesmo que com valor `null`).                      |
+| `set(key, value)`                         | Persiste a chave de volta ao arquivo (operação rara).                        |
+
+## Modo declarativo: `@Value`
+
+```java
+import dtm.di.annotations.*;
+import dtm.di.annotations.settings.Value;
+
+@Service
+public class DbService {
+
+    @Value(key = "db.url", defaultValue = "jdbc:h2:mem:default")
+    private String url;
+
+    @Value(key = "db.maxConnections", defaultValue = "10")
+    private int maxConnections;
+
+    @Value(key = "db")               // objeto inteiro
+    private DbConfig config;
+}
+```
+
+### Regras
+- `@Value` **não exige** combinar com `@Inject` — sua presença basta para o
+  framework resolver o campo.
+- Para tipos primitivos / `String` / wrappers (`Integer`, `Long`, `Double`,
+  `Boolean`, `Float`, `Short`, `Byte`), o `defaultValue()` (string) é
+  parseado para o tipo do campo se a chave não existir.
+- Para qualquer outro tipo: desserializado via Jackson. Se ausente ou inválido,
+  o framework cria uma nova instância via construtor default. Sem construtor
+  default → injetado `null`.
+
+## Sobrescrever a implementação
+
+O framework registra `JsonAppSettings` automaticamente ao final de `load()`,
+apenas se nenhum `AppSettings` já estiver presente. Para usar outro source
+(ex.: variáveis de ambiente, Vault, banco de dados), registre o seu via
+`@Configuration` antes:
+
+```java
+@Configuration
+public class SettingsConfig {
+
+    @Service
+    @BeanDefinition(proxyType = BeanDefinition.ProxyType.STATIC)
+    public AppSettings settings() {
+        return new JsonAppSettings(Path.of("/etc/myapp/settings.json"));
+    }
+}
+```
+
+
 # Configurações 
 - O framework utiliza a anotação `@Configuration` para configrar os gerenciamentos
 - A resolução de dependências (em métodos, campos ou construtores) segue a seguinte ordem:
