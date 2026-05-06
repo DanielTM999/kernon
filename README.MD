@@ -424,6 +424,39 @@ public class EmailNotifier {
 }
 ```
 
+### Listeners com múltiplos parâmetros
+
+Quando o método tem **mais de um parâmetro**, marque o receptor do evento com
+`@Event`. Os demais parâmetros são resolvidos pelo container — exatamente como
+em construtores de beans, inclusive com suporte a `@Qualifier`:
+
+```java
+import dtm.di.annotations.*;
+import dtm.di.annotations.event.Event;
+import dtm.di.annotations.event.EventListener;
+
+@Service
+public class OrderListeners {
+
+    @EventListener
+    public void onPlaced(@Event OrderPlacedEvent event, EmailService email, AuditLogger audit) {
+        // 'event' vem do publisher; 'email' e 'audit' vêm do container
+        email.send(event.orderId());
+        audit.record(event);
+    }
+
+    @EventListener(async = true)
+    public void onPlacedQualified(@Event OrderPlacedEvent event, @Qualifier("primary") MetricsCollector metrics) {
+        metrics.increment("orders.placed");
+    }
+}
+```
+
+> Para listeners com **um único parâmetro**, `@Event` é opcional — o parâmetro é
+> automaticamente tratado como receptor do evento. Se houver múltiplos parâmetros e
+> nenhum (ou mais de um) estiver marcado com `@Event`, o listener é descartado com
+> warning no log.
+
 ### Características
 | Atributo                 | Comportamento                                                            |
 |--------------------------|---------------------------------------------------------------------------|
@@ -431,7 +464,9 @@ public class EmailNotifier {
 | `async = false` (padrão) | Executa síncrono na thread chamadora; exceções propagam ao publisher      |
 | `async = true`           | Executa no executor compartilhado do container; exceções são logadas      |
 | `order`                  | Menor `order` executa antes (apenas em modo síncrono)                     |
-| Requisitos do método     | Não estático, exatamente 1 parâmetro, retorno `void`                      |
+| Receptor do evento       | Único parâmetro (auto) ou parâmetro marcado com `@Event` (multi-param)    |
+| Demais parâmetros        | Resolvidos via container — suportam `@Qualifier`/`@Inject(qualifier=…)`   |
+| Requisitos do método     | Não estático, retorno `void`                                              |
 
 ### Sobrescrever o publisher
 
