@@ -447,6 +447,7 @@ public class ManagedApplication {
             case "CONTAINER_LOAD" -> "Carregando container de dependências";
             case "STARTUP_METHOD" -> "Executando método de inicialização";
             case "BOOT_COMPLETE" -> "Processo de boot finalizado";
+            case "SHUTDOWN_START", "SHUTDOWN_COMPLETE" -> "Encerramento da aplicação";
             default -> "Fase desconhecida";
         };
 

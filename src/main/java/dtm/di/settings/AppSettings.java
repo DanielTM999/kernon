@@ -4,6 +4,9 @@ package dtm.di.settings;
  * Acesso programático às configurações do {@code settings.json} — análogo ao
  * {@code IConfiguration} do C# / {@code Environment} do Spring.
  *
+ * <p>O arquivo é lido <b>somente do classpath</b> ({@code src/main/resources/settings.json}
+ * empacotado no JAR). É <b>read-only</b> em runtime.</p>
+ *
  * <p>Chaves usam notação de ponto para navegar em estruturas aninhadas.
  * Exemplo, dado o JSON:</p>
  * <pre>{@code
@@ -28,7 +31,7 @@ package dtm.di.settings;
  *       Se a classe não tiver construtor default acessível, retorna {@code null}.</li>
  * </ul>
  *
- * <p>Implementações são thread-safe para leitura.</p>
+ * <p>Implementações são thread-safe.</p>
  */
 public interface AppSettings {
 
@@ -52,10 +55,4 @@ public interface AppSettings {
      * Indica se a chave existe (mesmo que com valor {@code null}).
      */
     boolean has(String key);
-
-    /**
-     * Persiste um valor (primitivo ou objeto) no arquivo de configuração.
-     * Usado raramente — a fonte de verdade é o JSON em disco editado pelo usuário.
-     */
-    void set(String key, Object value);
 }

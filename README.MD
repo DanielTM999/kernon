@@ -496,10 +496,13 @@ Camada de configuração externa baseada em um arquivo JSON — análogo ao
 
 ## O arquivo `settings.json`
 
-Por padrão o framework lê e grava em `./settings.json` (working directory).
-No primeiro boot, se o arquivo não existir, ele é criado automaticamente —
-copiando o conteúdo de `src/main/resources/settings.json` (caso exista no
-classpath) ou começando como `{}` vazio.
+O framework lê **somente do classpath**: coloque o arquivo em
+`src/main/resources/settings.json`. Ele será empacotado no JAR e carregado em
+memória durante o boot. **É read-only em runtime** — para mudar valores, edite
+o recurso e re-empacote.
+
+Se o arquivo não existir no classpath, o framework loga um warning e segue
+com configuração vazia — toda leitura passa a retornar o `defaultValue` fornecido.
 
 ```json
 {
@@ -541,7 +544,6 @@ public class FeatureService {
 | `getString/getInt/getLong/getDouble/getBoolean(key, default)` | Retorna o `default` se a chave não existir ou for inválida.                  |
 | `getObject(key, type)`                    | Desserializa via Jackson; se ausente/erro, retorna nova instância via construtor default (ou `null` se a classe não tiver um). |
 | `has(key)`                                | `true` se a chave existir (mesmo que com valor `null`).                      |
-| `set(key, value)`                         | Persiste a chave de volta ao arquivo (operação rara).                        |
 
 ## Modo declarativo: `@Value`
 
@@ -575,10 +577,10 @@ public class DbService {
 
 ## Sobrescrever a implementação
 
-O framework registra `JsonAppSettings` automaticamente ao final de `load()`,
-apenas se nenhum `AppSettings` já estiver presente. Para usar outro source
-(ex.: variáveis de ambiente, Vault, banco de dados), registre o seu via
-`@Configuration` antes:
+O framework registra `JsonAppSettings` automaticamente durante `load()`,
+apenas se nenhum `AppSettings` já estiver presente. Para usar outro nome de
+recurso, ou outra fonte (variáveis de ambiente, Vault, banco de dados),
+registre o seu via `@Configuration`:
 
 ```java
 @Configuration
@@ -587,7 +589,7 @@ public class SettingsConfig {
     @Service
     @BeanDefinition(proxyType = BeanDefinition.ProxyType.STATIC)
     public AppSettings settings() {
-        return new JsonAppSettings(Path.of("/etc/myapp/settings.json"));
+        return new JsonAppSettings("config/myapp.json"); // outro recurso do classpath
     }
 }
 ```
