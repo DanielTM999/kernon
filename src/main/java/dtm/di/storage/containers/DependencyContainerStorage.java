@@ -5,7 +5,7 @@ import dtm.di.annotations.aop.Aspect;
 import dtm.di.annotations.aop.DisableAop;
 import dtm.di.common.AnnotationsUtils;
 import dtm.di.common.reflection.ReflectionCache;
-import dtm.di.event.DefaultEventPublisher;
+import dtm.di.event.impl.DefaultEventPublisher;
 import dtm.di.event.EventPublisher;
 import dtm.di.settings.AppSettings;
 import dtm.di.settings.JsonAppSettings;
