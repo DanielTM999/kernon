@@ -1,6 +1,7 @@
 package dtm.di.settings;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -10,6 +11,8 @@ import lombok.extern.slf4j.Slf4j;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 
 /**
@@ -124,6 +127,22 @@ public class JsonAppSettings implements AppSettings {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
+    public <T> T getObject(String key, Type type) {
+        JsonNode el = lookup(key);
+        if (!isAbsent(el)) {
+            try {
+                JavaType javaType = mapper.getTypeFactory().constructType(type);
+                return mapper.convertValue(el, javaType);
+            } catch (Exception e) {
+                log.warn("Falha ao desserializar {} como {}: {}. Usando instancia default.",
+                        key, type.getTypeName(), e.getMessage());
+            }
+        }
+        return (T) defaultInstance(rawClass(type));
+    }
+
+    @Override
     public boolean has(String key) {
         JsonNode el = lookup(key);
         return el != null && !el.isMissingNode();
@@ -146,6 +165,7 @@ public class JsonAppSettings implements AppSettings {
     }
 
     private <T> T defaultInstance(Class<T> type) {
+        if (type == null) return null;
         try {
             Constructor<T> constructor = type.getDeclaredConstructor();
             if (!constructor.canAccess(null)) constructor.setAccessible(true);
@@ -154,5 +174,14 @@ public class JsonAppSettings implements AppSettings {
             log.warn("Sem construtor default para {} — retornando null", type.getName());
             return null;
         }
+    }
+
+    private Class<?> rawClass(Type type) {
+        if (type instanceof Class<?> clazz) return clazz;
+        if (type instanceof ParameterizedType parameterizedType
+                && parameterizedType.getRawType() instanceof Class<?> clazz) {
+            return clazz;
+        }
+        return null;
     }
 }

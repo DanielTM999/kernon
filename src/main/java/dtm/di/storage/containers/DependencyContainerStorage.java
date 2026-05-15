@@ -1936,14 +1936,6 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
     }
 
-    /**
-     * Resolve um campo anotado com {@link Value} consultando o {@link AppSettings}.
-     *
-     * <p>Para tipos primitivos/String/wrappers usa {@code getXxx(key, default)} com o
-     * {@code defaultValue()} convertido a partir da string. Para objetos, delega ao
-     * {@code getObject(key, type)} — que devolve nova instância via construtor default
-     * se a chave estiver ausente ou inválida.</p>
-     */
     private Object resolveValueAnnotation(Field variable) {
         Value value = variable.getAnnotation(Value.class);
         AppSettings settings = resolveAppSettings();
@@ -1980,6 +1972,12 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
         if(type == byte.class || type == Byte.class){
             return (byte) settings.getInt(key, parseInt(def, 0));
+        }
+
+        Type genericType = variable.getGenericType();
+        if (genericType instanceof ParameterizedType
+                && (Collection.class.isAssignableFrom(type) || Map.class.isAssignableFrom(type))) {
+            return settings.getObject(key, genericType);
         }
 
         return settings.getObject(key, type);

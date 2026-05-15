@@ -1,5 +1,8 @@
 package dtm.di.settings;
 
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
+
 /**
  * Acesso programático às configurações do {@code settings.json} — análogo ao
  * {@code IConfiguration} do C# / {@code Environment} do Spring.
@@ -50,6 +53,21 @@ public interface AppSettings {
      * Se ausente ou inválido, retorna uma nova instância via construtor default.
      */
     <T> T getObject(String key, Class<T> type);
+
+    /**
+     * Recupera uma chave como objeto desserializado preservando tipos parametrizados.
+     */
+    @SuppressWarnings("unchecked")
+    default <T> T getObject(String key, Type type) {
+        if (type instanceof Class<?> clazz) {
+            return (T) getObject(key, clazz);
+        }
+        if (type instanceof ParameterizedType parameterizedType
+                && parameterizedType.getRawType() instanceof Class<?> clazz) {
+            return (T) getObject(key, clazz);
+        }
+        return null;
+    }
 
     /**
      * Indica se a chave existe (mesmo que com valor {@code null}).
