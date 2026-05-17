@@ -836,6 +836,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
         for (Constructor<?> constructor : ReflectionCache.constructors(clazz)) {
             for (Parameter param : constructor.getParameters()) {
+                if (param.isAnnotationPresent(Value.class)) {
+                    continue;
+                }
                 dependencies.addAll(isServiceDependency(param.getType(), serviceLoadedClass, param));
             }
         }
@@ -1118,6 +1121,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private Object getDependecyObjectByParam(Parameter parameter, Object instance, boolean desableAllWarn){
+        if(parameter.isAnnotationPresent(Value.class)){
+            return resolveValueAnnotation(parameter);
+        }
+
         final ParamtrizedObject paramtrizedObject = extractType(parameter);
 
         if(paramtrizedObject.isParametrized()){
@@ -1944,8 +1951,21 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     variable.getDeclaringClass().getName(), variable.getName());
             return null;
         }
+        return resolveValue(value, variable.getType(), variable.getGenericType(), settings);
+    }
 
-        Class<?> type = variable.getType();
+    private Object resolveValueAnnotation(Parameter parameter) {
+        Value value = parameter.getAnnotation(Value.class);
+        AppSettings settings = resolveAppSettings();
+        if(settings == null){
+            log.warn("AppSettings indisponível ao resolver @Value no parâmetro '{}' de {}",
+                    parameter.getName(), parameter.getDeclaringExecutable());
+            return null;
+        }
+        return resolveValue(value, parameter.getType(), parameter.getParameterizedType(), settings);
+    }
+
+    private Object resolveValue(Value value, Class<?> type, Type genericType, AppSettings settings) {
         String key = value.key();
         String def = value.defaultValue();
 
@@ -1974,7 +1994,6 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             return (byte) settings.getInt(key, parseInt(def, 0));
         }
 
-        Type genericType = variable.getGenericType();
         if (genericType instanceof ParameterizedType
                 && (Collection.class.isAssignableFrom(type) || Map.class.isAssignableFrom(type))) {
             return settings.getObject(key, genericType);
