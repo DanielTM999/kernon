@@ -130,6 +130,43 @@ public class DefaultEventPublisher implements EventPublisher, EventListenerPubli
         return addConsumerBinding(targetClass, consumer, true, 0);
     }
 
+    public EventListenerRegistration registerListeners(Object listener) {
+        if (listener == null) {
+            throw new IllegalArgumentException("listener nao pode ser null");
+        }
+
+        return registerListeners(listener, listener.getClass());
+    }
+
+    public EventListenerRegistration registerListeners(Object listener, Class<?> listenerClass) {
+        if (listener == null) {
+            throw new IllegalArgumentException("listener nao pode ser null");
+        }
+
+        if (listenerClass == null) {
+            throw new IllegalArgumentException("listenerClass nao pode ser null");
+        }
+
+        List<Binding> collected = collectMethodBindings(listener, listenerClass);
+
+        if (collected.isEmpty()) {
+            return () -> {};
+        }
+
+        synchronized (bindings) {
+            bindings.addAll(collected);
+            bindings.sort(Comparator.comparingInt(Binding::order));
+        }
+
+        log.debug(
+                "Listeners de instancia registrados. listenerClass={}, count={}",
+                listenerClass.getName(),
+                collected.size()
+        );
+
+        return () -> unregisterMethodBindings(collected, listenerClass);
+    }
+
     /**
      * Indexa os listeners declarativos encontrados nos beans do container.
      *
@@ -156,15 +193,7 @@ public class DefaultEventPublisher implements EventPublisher, EventListenerPubli
                 continue;
             }
 
-            Class<?> beanClass = bean.getClass();
-
-            for (Method method : ReflectionCache.methodsWithAnnotation(beanClass, EventListener.class)) {
-                Binding binding = buildMethodBinding(bean, method);
-
-                if (binding != null) {
-                    collected.add(binding);
-                }
-            }
+            collected.addAll(collectMethodBindings(bean, bean.getClass()));
         }
 
         synchronized (bindings) {
@@ -183,8 +212,25 @@ public class DefaultEventPublisher implements EventPublisher, EventListenerPubli
         }
     }
 
+    private List<Binding> collectMethodBindings(Object bean, Class<?> beanClass) {
+        List<Binding> collected = new ArrayList<>();
+
+        for (Method method : ReflectionCache.methodsWithAnnotation(beanClass, EventListener.class)) {
+            Binding binding = buildMethodBinding(bean, beanClass, method);
+
+            if (binding != null) {
+                collected.add(binding);
+            }
+        }
+
+        return collected;
+    }
+
     private Binding buildMethodBinding(Object bean, Method method) {
-        Class<?> beanClass = bean.getClass();
+        return buildMethodBinding(bean, bean.getClass(), method);
+    }
+
+    private Binding buildMethodBinding(Object bean, Class<?> beanClass, Method method) {
         Parameter[] params = method.getParameters();
 
         if (params.length == 0) {
@@ -308,6 +354,18 @@ public class DefaultEventPublisher implements EventPublisher, EventListenerPubli
                 targetClass.getName(),
                 async,
                 order
+        );
+    }
+
+    private void unregisterMethodBindings(List<Binding> registeredBindings, Class<?> listenerClass) {
+        synchronized (bindings) {
+            bindings.removeAll(registeredBindings);
+        }
+
+        log.debug(
+                "Listeners de instancia removidos. listenerClass={}, count={}",
+                listenerClass.getName(),
+                registeredBindings.size()
         );
     }
 

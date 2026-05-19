@@ -6,23 +6,28 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * Marca o parâmetro de um método {@link EventListener} que receberá o evento publicado.
+ * Marca uma classe criada por {@code newInstance} como participante do sistema
+ * de eventos ou marca o parametro de um metodo {@link EventListener} que
+ * recebera o evento publicado.
  *
- * <p>Necessário apenas quando o listener possui mais de um parâmetro. Nesse caso, o parâmetro
- * anotado com {@code @Event} recebe o evento e os demais parâmetros são resolvidos via
- * injeção de dependência (mesma semântica de injeção em construtores e métodos do container).</p>
+ * <p>Quando usada em uma classe, permite que instancias criadas por
+ * {@code DependencyContainer#newInstance(...)} tenham seus metodos
+ * {@link EventListener} registrados no {@code EventPublisher}, sem registrar a
+ * instancia como dependencia do container.</p>
  *
- * <p>Para listeners com um único parâmetro, a anotação é opcional — esse parâmetro é
- * automaticamente considerado o evento.</p>
+ * <p>Quando usada em parametros, e necessaria apenas quando o listener possui
+ * mais de um parametro. Nesse caso, o parametro anotado com {@code @Event}
+ * recebe o evento e os demais parametros sao resolvidos via injecao de
+ * dependencia.</p>
  *
  * <pre>{@code
  * @EventListener
  * public void onOrderPlaced(@Event OrderPlacedEvent event, EmailService email, AuditLogger audit) {
- *     // 'event' vem do publisher; 'email' e 'audit' vêm do container
+ *     // 'event' vem do publisher; 'email' e 'audit' vem do container
  * }
  * }</pre>
  */
 @Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.PARAMETER)
+@Target({ElementType.PARAMETER, ElementType.TYPE, ElementType.ANNOTATION_TYPE})
 public @interface Event {
 }

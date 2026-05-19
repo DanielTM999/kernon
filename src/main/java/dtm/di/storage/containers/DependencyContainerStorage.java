@@ -3,6 +3,7 @@ package dtm.di.storage.containers;
 import dtm.di.annotations.*;
 import dtm.di.annotations.aop.Aspect;
 import dtm.di.annotations.aop.DisableAop;
+import dtm.di.annotations.event.Event;
 import dtm.di.common.AnnotationsUtils;
 import dtm.di.common.reflection.ReflectionCache;
 import dtm.di.event.impl.DefaultEventPublisher;
@@ -356,7 +357,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     public <T> T newInstance(Class<T> referenceClass) throws NewInstanceException {
         throwIfUnload();
         try{
-            return (T)createObject(referenceClass, isAopEnabled(referenceClass));
+            T instance = (T)createObject(referenceClass, isAopEnabled(referenceClass));
+            registerEventListenersForNewInstance(referenceClass, instance);
+            return instance;
         }catch (Exception e){
             throw new NewInstanceException(e.getMessage(), referenceClass, e);
         }
@@ -366,7 +369,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     public <T> T newInstance(Class<T> referenceClass, Object... contructorArgs) throws NewInstanceException {
         throwIfUnload();
         try{
-            return (T)createObject(referenceClass, isAopEnabled(referenceClass), contructorArgs);
+            T instance = (T)createObject(referenceClass, isAopEnabled(referenceClass), contructorArgs);
+            registerEventListenersForNewInstance(referenceClass, instance);
+            return instance;
         }catch (Exception e){
             throw new NewInstanceException(e.getMessage(), referenceClass, e);
         }
@@ -376,10 +381,68 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     public <T> T newInstance(Class<T> referenceClass, Boolean aop, Object... contructorArgs) throws NewInstanceException {
         throwIfUnload();
         try{
-            return (T)createObject(referenceClass, ((aop != null)? aop : isAopEnabled(referenceClass)) , contructorArgs);
+            T instance = (T)createObject(referenceClass, ((aop != null)? aop : isAopEnabled(referenceClass)) , contructorArgs);
+            registerEventListenersForNewInstance(referenceClass, instance);
+            return instance;
         }catch (Exception e){
             throw new NewInstanceException(e.getMessage(), referenceClass, e);
         }
+    }
+
+    private void registerEventListenersForNewInstance(Class<?> referenceClass, Object instance) {
+        if (referenceClass == null || instance == null) {
+            return;
+        }
+
+        if (!AnnotationsUtils.hasMetaAnnotation(referenceClass, Event.class)) {
+            return;
+        }
+
+        try {
+            DefaultEventPublisher publisher = getDefaultEventPublisher();
+
+            if (publisher == null) {
+                log.warn(
+                        "Instancia {} anotada com @Event nao teve @EventListener registrado: DefaultEventPublisher nao encontrado",
+                        referenceClass.getName()
+                );
+                return;
+            }
+
+            publisher.registerListeners(instance, referenceClass);
+        } catch (Exception e) {
+            throw new NewInstanceException(
+                    "Erro ao registrar @EventListener da instancia " + referenceClass.getName() + ": " + e.getMessage(),
+                    referenceClass,
+                    e
+            );
+        }
+    }
+
+    private DefaultEventPublisher getDefaultEventPublisher() {
+        Map<String, Dependency> publishers = dependencyContainer.get(EventPublisher.class);
+
+        if (publishers == null || publishers.isEmpty()) {
+            return null;
+        }
+
+        for (Dependency dependency : publishers.values()) {
+            if (dependency == null) {
+                continue;
+            }
+
+            try {
+                Object publisher = dependency.getDependency();
+
+                if (publisher instanceof DefaultEventPublisher defaultEventPublisher) {
+                    return defaultEventPublisher;
+                }
+            } catch (Exception e) {
+                log.warn("Falha ao obter EventPublisher para registrar listener de newInstance: {}", e.getMessage(), e);
+            }
+        }
+
+        return null;
     }
 
     @Override
