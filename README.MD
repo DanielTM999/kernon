@@ -516,6 +516,8 @@ com configuração vazia — toda leitura passa a retornar o `defaultValue` forn
 }
 ```
 
+
+
 > Chaves em **notação de ponto** navegam pela árvore: `text.val`, `db.url`.
 
 ## Modo programático: injetar `AppSettings`
