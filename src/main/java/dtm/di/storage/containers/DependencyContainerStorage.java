@@ -61,6 +61,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private final AtomicReference<InjectionStrategy> injectionStrategy;
 
     private final Map<Class<?>, Map<String, Dependency>> dependencyContainer;
+    private final Map<Class<?>, Dependency> primaryDependencyIndex;
     private final ClassFinder classFinder;
     private final AtomicBoolean loaded;
 
@@ -94,6 +95,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         return containerStorage;
     }
 
+    public static DependencyContainerStorage getInstanceFromArgs(Class<?> mainClass, String[] args){
+        return getInstance(mainClass, resolveProfilesFromArgs(args).toArray(String[]::new));
+    }
+
     public static DependencyContainerStorage getLoadedInstance(){
         DependencyContainerStorage containerStorage = StaticContainer.getDependencyContainer(DependencyContainerStorage.class);
         if(containerStorage == null){
@@ -105,6 +110,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     public static void loadInstance(Class<?> mainClass, String... profiles){
         StaticContainer.trySetDependencyContainer(new DependencyContainerStorage(mainClass, profiles));
+    }
+
+    public static void loadInstanceFromArgs(Class<?> mainClass, String[] args){
+        loadInstance(mainClass, resolveProfilesFromArgs(args).toArray(String[]::new));
     }
 
 
@@ -124,6 +133,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         );
         this.mainVirtualExecutor = Executors.newThreadPerTaskExecutor(vFactory);
         this.dependencyContainer = new ConcurrentHashMap<>();
+        this.primaryDependencyIndex = new ConcurrentHashMap<>();
         this.loaded = new AtomicBoolean(false);
         this.classFinder = new ClassFinderProjectService();
         this.childrenRegistration = false;
@@ -136,14 +146,69 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         this.externalBeenAfter = new LinkedHashMap<>();
         this.classFinderConfigurations = getFindConfigurations();
         this.mainClass = mainClass;
-        if(profiles.length > 0){
-            this.profiles = Arrays.stream(profiles)
-                    .filter((profile) -> profile != null && !profile.isEmpty())
-                    .toList();
+        this.profiles = resolveProfiles(profiles);
+    }
 
-        }else{
-            this.profiles = List.of("default");
+    private static List<String> resolveProfiles(String... profiles){
+        List<String> selected = normalizeProfiles(profiles);
+        if(!selected.isEmpty()) return selected;
+
+        selected = resolveProfilesFromSettings();
+        if(!selected.isEmpty()) return selected;
+
+        return List.of("default");
+    }
+
+    public static List<String> resolveProfilesFromArgs(String[] args){
+        if(args == null || args.length == 0) return List.of();
+
+        List<String> profiles = new ArrayList<>();
+        for(int i = 0; i < args.length; i++){
+            String arg = args[i];
+            if(arg == null || arg.isBlank()) continue;
+
+            if(arg.startsWith("-profile=")){
+                profiles.add(arg.substring("-profile=".length()));
+                continue;
+            }
+
+            if(arg.startsWith("-p=")){
+                profiles.add(arg.substring("-p=".length()));
+                continue;
+            }
+
+            if(arg.equals("-profile") || arg.equals("-p")){
+                if(i + 1 < args.length && args[i + 1] != null && !args[i + 1].startsWith("-")){
+                    profiles.add(args[++i]);
+                }
+            }
         }
+
+        return normalizeProfiles(profiles.toArray(String[]::new));
+    }
+
+    private static List<String> resolveProfilesFromSettings(){
+        JsonAppSettings settings = new JsonAppSettings();
+
+        List<String> profiles = normalizeProfiles(settings.getStringArray("profiles"));
+        if(!profiles.isEmpty()) return profiles;
+
+        profiles = normalizeProfiles(settings.getStringArray("profile"));
+        if(!profiles.isEmpty()) return profiles;
+
+        return List.of();
+    }
+
+    private static List<String> normalizeProfiles(String... profiles){
+        if(profiles == null || profiles.length == 0) return List.of();
+
+        return Arrays.stream(profiles)
+                .filter(Objects::nonNull)
+                .flatMap(profile -> Arrays.stream(profile.split(",")))
+                .map(String::trim)
+                .filter(profile -> !profile.isEmpty())
+                .distinct()
+                .toList();
     }
 
     @Override
@@ -193,6 +258,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         loadedSystemClasses.clear();
         serviceBeensDefinition.clear();
         dependencyContainer.clear();
+        primaryDependencyIndex.clear();
         foldersToLoad.clear();
         externalBeenBefore.clear();
         externalBeenAfter.clear();
@@ -521,7 +587,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         for (Dependency dependencyObj : dependencyList){
             for(Class<?> clazz : dependencyObj.getDependencyClassInstanceTypes()){
                 dependencyContainer.remove(clazz);
+                primaryDependencyIndex.remove(clazz, dependencyObj);
             }
+            primaryDependencyIndex.remove(dependencyObj.getDependencyClass(), dependencyObj);
         }
     }
 
@@ -584,6 +652,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private void loadBeen(ServiceBean been, final Set<Class<?>> registeringClasses, String qualifier) throws InvalidClassRegistrationException{
+        if(!isProfileActive(been.getClazz())) return;
         if(hasMetaAnnotation(been.getClazz(), Async.class)){
             loadAsyncBeen(been, registeringClasses, qualifier);
         }else{
@@ -697,7 +766,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
         int order = 0;
         for(Class<?> subClass : listOfRegistration){
-            if(!dependencyContainer.containsKey(subClass)){
+            if(!dependencyContainer.containsKey(subClass) && isProfileActive(subClass)){
                 loadBeen(new ServiceBean(subClass, order++, isAopEnabled(clazz)), registeringClasses, getQualifierName(subClass));
             }
         }
@@ -1412,7 +1481,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             }
             mapOfDependency = getDependencyMap(clazzVariable);
         }
-        Dependency dependencyObject = resolveWithPrimary(mapOfDependency, qualifierName);
+        Dependency dependencyObject = resolveWithPrimary(clazzVariable, mapOfDependency, qualifierName);
         if(dependencyObject == null){
             throw new DependencyContainerException("Dependencia não encontrada para: "+clazzVariable);
         }
@@ -1428,32 +1497,15 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
      */
     private static final String PRIMARY_QUALIFIER_PREFIX = "$primary$:";
 
-    private Dependency resolveWithPrimary(Map<String, Dependency> map, String qualifier){
+    private Dependency resolveWithPrimary(Class<?> reference, Map<String, Dependency> map, String qualifier){
         if(map == null || map.isEmpty()) return null;
         boolean isDefaultLookup = qualifier == null || qualifier.isEmpty() || "default".equalsIgnoreCase(qualifier);
-        if(isDefaultLookup && map.size() > 1){
-            Dependency primary = findPrimary(map);
+        if(isDefaultLookup){
+            Dependency primary = primaryDependencyIndex.get(reference);
             if(primary != null) return primary;
         }
         Dependency direct = map.get(qualifier);
         if(direct != null) return direct;
-        if(isDefaultLookup){
-            return findPrimary(map);
-        }
-        return null;
-    }
-
-    private Dependency findPrimary(Map<String, Dependency> map){
-        for(Map.Entry<String, Dependency> entry : map.entrySet()){
-            String q = entry.getKey();
-            if(q != null && q.startsWith(PRIMARY_QUALIFIER_PREFIX)){
-                return entry.getValue();
-            }
-            Class<?> depClass = entry.getValue().getDependencyClass();
-            if(depClass != null && depClass.isAnnotationPresent(dtm.di.annotations.Primary.class)){
-                return entry.getValue();
-            }
-        }
         return null;
     }
 
@@ -1492,6 +1544,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private void registerObject(@NonNull Object dependency, @NonNull String qualifier) throws InvalidClassRegistrationException {
         try {
             final Class<?> clazz = dependency.getClass();
+            if(!isProfileActive(clazz)) return;
             final Object toRegistrate = isAopEnabled(clazz) ? proxyObject(dependency, clazz) : dependency;
             if(dependencyContainer.containsKey(clazz)) return;
             final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(clazz, qualifier);
@@ -1515,6 +1568,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private void registerObject(@NonNull Object dependency, @NonNull String qualifier, boolean aop) throws InvalidClassRegistrationException {
         try {
             final Class<?> clazz = dependency.getClass();
+            if(!isProfileActive(clazz)) return;
             final Object toRegistrate = aop ? proxyObject(dependency, clazz) : dependency;
             if(dependencyContainer.containsKey(clazz)) return;
             final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(clazz, qualifier);
@@ -1537,6 +1591,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private void registerObjectFunction(@NonNull RegistrationFunction<?> registrationFunction, Boolean isAop){
         final Class<?> referenceClass = registrationFunction.getReferenceClass();
         final String qualifier = (registrationFunction.getQualifier().isEmpty()) ? "default" : registrationFunction.getQualifier();
+        if(!isProfileActive(referenceClass)) return;
 
         try{
             Supplier<?> activatorFunction = () -> {
@@ -1572,6 +1627,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         final Class<?> referenceClass = asyncRegistrationFunction.getReferenceClass();
         final String qualifier = (asyncRegistrationFunction.getQualifier().isEmpty()) ? "default" : asyncRegistrationFunction.getQualifier();
         final ExecutorService executorService = (asyncRegistrationFunction.getExecutor() != null) ? asyncRegistrationFunction.getExecutor() : mainExecutor;
+        if(!isProfileActive(referenceClass)) return;
         try{
             CompletableFuture<?> resolveComponentAsync = CompletableFuture.supplyAsync(() -> {
                 boolean shouldApplyAop = (isAop != null) ? isAop : isAopEnabled(referenceClass);
@@ -1615,7 +1671,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             @NonNull Class<?> classToRegister,
             @NonNull DependencyObject dependencyObject ,
             @NonNull String qualifier
-    ){
+    ) throws InvalidClassRegistrationException {
         registerInContainer(listOfDependency, classToRegister, dependencyObject, qualifier, true);
     }
 
@@ -1625,10 +1681,38 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             @NonNull DependencyObject dependencyObject ,
             @NonNull String qualifier,
             boolean registerSubTypes
-    ){
+    ) throws InvalidClassRegistrationException {
+        indexPrimary(classToRegister, dependencyObject, qualifier);
         listOfDependency.put(qualifier, dependencyObject);
         dependencyContainer.put(classToRegister, listOfDependency);
         if(registerSubTypes)registerSubTypes(classToRegister, listOfDependency);
+    }
+
+    private void indexPrimary(Class<?> classToRegister, Dependency dependencyObject, String qualifier) throws InvalidClassRegistrationException {
+        if(!isPrimaryDependency(dependencyObject, qualifier)) return;
+
+        Set<Class<?>> types = new LinkedHashSet<>();
+        Class<?> dependencyClass = dependencyObject.getDependencyClass();
+        if(dependencyClass != null && classToRegister.isAssignableFrom(dependencyClass)){
+            types.add(classToRegister);
+        }
+        types.addAll(dependencyObject.getDependencyClassInstanceTypes());
+
+        for(Class<?> type : types){
+            Dependency existing = primaryDependencyIndex.putIfAbsent(type, dependencyObject);
+            if(existing != null && existing != dependencyObject){
+                throw new InvalidClassRegistrationException(
+                        "Mais de um bean @Primary foi registrado para " + type.getName() + ". Mantenha apenas um bean principal para esse tipo.",
+                        dependencyObject.getDependencyClass()
+                );
+            }
+        }
+    }
+
+    private boolean isPrimaryDependency(Dependency dependencyObject, String qualifier){
+        if(qualifier != null && qualifier.startsWith(PRIMARY_QUALIFIER_PREFIX)) return true;
+        Class<?> depClass = dependencyObject.getDependencyClass();
+        return depClass != null && depClass.isAnnotationPresent(dtm.di.annotations.Primary.class);
     }
 
     private Map<String, Dependency> getDependencyMap(Class<?> referenceClass) {
@@ -1749,11 +1833,15 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             return false;
         }
 
-        Profile profile = clazz.getAnnotation(Profile.class);
+        return isProfileActive(clazz);
+    }
+
+    private boolean isProfileActive(Class<?> clazz){
+        Profile profile = AnnotationsUtils.getMetaAnnotation(clazz, Profile.class);
 
         if (profile != null) {
-            String selectedProfile = profile.value();
-            return selectedProfile == null || selectedProfile.isEmpty() || this.profiles.contains(selectedProfile);
+            List<String> selectedProfiles = normalizeProfiles(profile.value());
+            return selectedProfiles.isEmpty() || selectedProfiles.stream().anyMatch(this.profiles::contains);
         }
 
         return true;
@@ -1942,7 +2030,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private <T> T getDependency(Class<T> reference, String qualifier, Supplier<Boolean> showWarnIfError) {
         try{
             final Map<String, Dependency> listOfDependency = getDependencyMap(reference);
-            final Dependency dependencyObject = resolveWithPrimary(listOfDependency, qualifier);
+            final Dependency dependencyObject = resolveWithPrimary(reference, listOfDependency, qualifier);
 
             if(dependencyObject == null){
                 throw new DependencyInjectionException("Erro ao obter dependência: reference="+reference+", qualifier="+qualifier);

@@ -217,7 +217,7 @@ public class ManagedApplication {
             DependencyContainer dependencyContainer = StaticContainer.getDependencyContainer(clazz);
 
             if(dependencyContainer == null){
-                DependencyContainerStorage dependencyContainerStorage = DependencyContainerStorage.getInstance(mainClass);
+                DependencyContainerStorage dependencyContainerStorage = DependencyContainerStorage.getInstanceFromArgs(mainClass, launchArgsRef.get());
                 applyPeckageScan(dependencyContainerStorage.getClassFinderConfigurations());
                 return dependencyContainerStorage;
             }
@@ -230,7 +230,7 @@ public class ManagedApplication {
             }
 
         }else{
-            DependencyContainerStorage dependencyContainerStorage = DependencyContainerStorage.getInstance(mainClass);
+            DependencyContainerStorage dependencyContainerStorage = DependencyContainerStorage.getInstanceFromArgs(mainClass, launchArgsRef.get());
             applyPeckageScan(dependencyContainerStorage.getClassFinderConfigurations());
             logInfo("Container {} obtido com sucesso", DependencyContainer.class);
             return dependencyContainerStorage;

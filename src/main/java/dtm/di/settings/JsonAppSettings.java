@@ -14,6 +14,8 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Implementação padrão de {@link AppSettings}, somente leitura, ancorada em um
@@ -146,6 +148,21 @@ public class JsonAppSettings implements AppSettings {
     public boolean has(String key) {
         JsonNode el = lookup(key);
         return el != null && !el.isMissingNode();
+    }
+
+    public String[] getStringArray(String key) {
+        JsonNode el = lookup(key);
+        if (isAbsent(el)) return new String[0];
+        if (el.isArray()) {
+            List<String> values = new ArrayList<>();
+            for (JsonNode item : el) {
+                if (!isAbsent(item)) {
+                    values.add(item.asText());
+                }
+            }
+            return values.toArray(String[]::new);
+        }
+        return new String[]{el.asText()};
     }
 
     private boolean isAbsent(JsonNode el) {
