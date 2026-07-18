@@ -128,19 +128,31 @@
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>license-maven-plugin</artifactId>
                 <version>${license-maven-plugin.version}</version>
-                <configuration>
-                    <outputDirectory>${project.basedir}/third-party-licenses</outputDirectory>
-                    <thirdPartyFilename>THIRD-PARTY.txt</thirdPartyFilename>
-                    <addOutputDirectoryAsResourceDir>false</addOutputDirectoryAsResourceDir>
-                    <sortArtifactByName>true</sortArtifactByName>
-                </configuration>
                 <executions>
                     <execution>
-                        <id>generate-third-party-licenses</id>
-                        <phase>package</phase>
+                        <id>download-dependency-licenses</id>
+                        <phase>generate-resources</phase>
+                        <goals>
+                            <goal>download-licenses</goal>
+                        </goals>
+                        <configuration>
+                            <licensesOutputDirectory>${project.build.outputDirectory}/licenses/dependencies</licensesOutputDirectory>
+                            <licensesOutputFile>${project.build.outputDirectory}/licenses/licenses.xml</licensesOutputFile>
+                            <errorRemedy>warn</errorRemedy>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>generate-third-party-license-list</id>
+                        <phase>generate-resources</phase>
                         <goals>
                             <goal>add-third-party</goal>
                         </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.outputDirectory}/licenses</outputDirectory>
+                            <thirdPartyFilename>THIRD-PARTY.txt</thirdPartyFilename>
+                            <addOutputDirectoryAsResourceDir>false</addOutputDirectoryAsResourceDir>
+                            <sortArtifactByName>true</sortArtifactByName>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>
