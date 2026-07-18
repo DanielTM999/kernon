@@ -8,6 +8,14 @@
     <artifactId>kernon</artifactId>
     <version>1.2.0</version>
 
+    <licenses>
+        <license>
+            <name>Kernon Public License 1.0</name>
+            <url>LICENSE.md</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
     <properties>
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
@@ -20,6 +28,7 @@
         <jackson.version>2.18.2</jackson.version>
         <maven-javadoc-plugin.version>3.6.3</maven-javadoc-plugin.version>
         <maven-source-plugin.version>3.3.0</maven-source-plugin.version>
+        <license-maven-plugin.version>2.7.1</license-maven-plugin.version>
     </properties>
 
     <dependencies>
@@ -110,6 +119,27 @@
                         <id>attach-javadocs</id>
                         <goals>
                             <goal>jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>license-maven-plugin</artifactId>
+                <version>${license-maven-plugin.version}</version>
+                <configuration>
+                    <outputDirectory>${project.basedir}/third-party-licenses</outputDirectory>
+                    <thirdPartyFilename>THIRD-PARTY.txt</thirdPartyFilename>
+                    <addOutputDirectoryAsResourceDir>false</addOutputDirectoryAsResourceDir>
+                    <sortArtifactByName>true</sortArtifactByName>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>generate-third-party-licenses</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>add-third-party</goal>
                         </goals>
                     </execution>
                 </executions>

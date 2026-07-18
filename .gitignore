@@ -4,6 +4,7 @@ Main.java
 /.claude
 /.orion
 .orion
+third-party-licenses/
 
 ### build ###
 target/
