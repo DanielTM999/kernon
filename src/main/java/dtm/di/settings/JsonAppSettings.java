@@ -1,10 +1,11 @@
 package dtm.di.settings;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.JavaType;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.JavaType;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.JsonNodeFactory;
+import tools.jackson.databind.node.ObjectNode;
 import dtm.di.annotations.aop.DisableAop;
 import lombok.extern.slf4j.Slf4j;
 
@@ -68,7 +69,7 @@ public class JsonAppSettings implements AppSettings {
                 return JsonNodeFactory.instance.objectNode();
             }
             return (ObjectNode) node;
-        } catch (IOException e) {
+        } catch (IOException | JacksonException e) {
             log.error("Falha ao ler '{}' do classpath: {}. Usando configuração vazia.", resourceName, e.getMessage());
             return JsonNodeFactory.instance.objectNode();
         }
