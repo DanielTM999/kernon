@@ -1,6 +1,7 @@
 package dtm.di.core.aop;
 
 import java.lang.reflect.Method;
+import java.util.concurrent.Callable;
 
 /**
  * Infraestrutura interna do mecanismo AOP do framework.
@@ -18,6 +19,8 @@ import java.lang.reflect.Method;
  */
 public abstract class AopUtils {
     public abstract void applyBefore(Method method, Object[] args, Object proxy, Object realIntance);
+    public abstract MainMethodResult applyOnMainMethod(Method method, Object[] args, Object proxy, Object realInstance, Callable<?> mainMethod) throws Exception;
     public abstract Object applyAfter(Method method, Object[] args, Object proxy, Object realIntance, Object currentResult);
     public abstract void applyOnErrorMethod(Method method, Object[] args, Object proxy, Object realIntance, Throwable cause);
+    public record MainMethodResult(boolean intercepted, Object result) {}
 }

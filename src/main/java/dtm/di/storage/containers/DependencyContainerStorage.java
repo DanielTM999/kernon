@@ -1165,12 +1165,11 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private Object createObject(@NonNull Class<?> clazz, boolean aop, Object[] extraConstructorArgs){
         try {
-            String ondeEstou = "Contructor of: " + clazz;
             Constructor<?>[] constructors = ReflectionCache.constructors(clazz).toArray(new Constructor<?>[0]);
             List<Parameter> failedParams = new ArrayList<>();
             for (Constructor<?> constructor : constructors) {
                 Parameter[] parameterTypes = constructor.getParameters();
-                Object[] resolvedArgs = tryResolveConstructorArgs(parameterTypes, extraConstructorArgs, failedParams, ondeEstou);
+                Object[] resolvedArgs = tryResolveConstructorArgs(parameterTypes, extraConstructorArgs, failedParams, clazz);
 
                 if (resolvedArgs != null) {
                     constructor.setAccessible(true);
@@ -1218,11 +1217,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private Object createWithConstructor(@NonNull Class<?> clazz, @NonNull Constructor<?>[] constructors){
         try{
-            String ondeEstou = "Contructor of: " + clazz;
             Constructor<?> chosenConstructor = getSelectedConstructor(constructors, clazz);
             Parameter[] parameters = chosenConstructor.getParameters();
             Object[] args = Arrays.stream(parameters)
-                    .map(e -> (getDependecyObjectByParam(e, ondeEstou)))
+                    .map(e -> (getDependecyObjectByParam(e, clazz)))
                     .toArray();
 
             return chosenConstructor.newInstance(args);
@@ -1258,26 +1256,25 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
 
         final ParamtrizedObject paramtrizedObject = extractType(parameter);
+        boolean disableWarn = desableAllWarn || isInjectionWarnDisabled(parameter, instance);
 
         if(paramtrizedObject.isParametrized()){
-            return getParamObject(paramtrizedObject.getBaseClass(), paramtrizedObject.getParamType(), parameter, false, instance);
+            return getParamObject(paramtrizedObject.getBaseClass(), paramtrizedObject.getParamType(), parameter, false, instance, disableWarn);
         }else{
             return getDependency(paramtrizedObject.getBaseClass(), () -> {
-                if(desableAllWarn) return false;
-                return !parameter.isAnnotationPresent(DisableInjectionWarn.class);
+                return !disableWarn;
             });
         }
     }
 
     private Object getDependencyObjectByField(Field variable, Object instance){
         final ParamtrizedObject paramtrizedObject = extractType(variable);
+        boolean disableWarn = isInjectionWarnDisabled(variable, instance);
 
         if(paramtrizedObject.isParametrized()){
-            return getParamObject(paramtrizedObject.getBaseClass(), paramtrizedObject.getParamType(), variable, true, instance);
+            return getParamObject(paramtrizedObject.getBaseClass(), paramtrizedObject.getParamType(), variable, true, instance, disableWarn);
         }else{
-            return getDependency(paramtrizedObject.getBaseClass(), () -> {
-                return !variable.isAnnotationPresent(DisableInjectionWarn.class);
-            });
+            return getDependency(paramtrizedObject.getBaseClass(), () -> !disableWarn);
         }
     }
 
@@ -1286,10 +1283,11 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             final Type genericType,
             AnnotatedElement element,
             boolean useElementToGetQualifier,
-            Object instance
+            Object instance,
+            boolean disableWarn
     ) {
         String qualifier = useElementToGetQualifier ? getQualifierName(element) : getQualifierName(rawType);
-        boolean warn = !element.isAnnotationPresent(DisableInjectionWarn.class);
+        boolean warn = !disableWarn;
 
         if (LazyDependency.class.equals(rawType)) {
             return Lazy.of(() -> resolveNestedObject(genericType, element, qualifier, instance, warn));
@@ -1301,11 +1299,11 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     : genericType;
 
             validateTerminalType(rawType, innerType, instance);
-            return wrapInContainer(rawType, null, extractRawClass(innerType), qualifier, element);
+            return wrapInContainer(rawType, null, extractRawClass(innerType), qualifier, warn);
         }
 
         Object innerObject = resolveNestedObject(genericType, element, qualifier, instance, warn);
-        return wrapInContainer(rawType, innerObject, extractRawClass(genericType), qualifier, element);
+        return wrapInContainer(rawType, innerObject, extractRawClass(genericType), qualifier, warn);
     }
 
     private Object resolveNestedObject(Type type, AnnotatedElement element, String qualifier, Object instance, boolean warn) {
@@ -1318,10 +1316,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
         if (AsyncComponent.class.equals(nextRaw)) {
             validateTerminalType(nextRaw, innerType, instance);
-            return wrapInContainer(nextRaw, null, (Class<?>) innerType, qualifier, element);
+            return wrapInContainer(nextRaw, null, (Class<?>) innerType, qualifier, warn);
         }
 
-        return getParamObject(nextRaw, innerType, element, false, instance);
+        return getParamObject(nextRaw, innerType, element, false, instance, !warn);
     }
 
     private void validateTerminalType(Class<?> nextRaw, Type innerType, Object instance) {
@@ -1348,10 +1346,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             Object resolvedInner,
             Class<?> targetClass,
             String qualifier,
-            AnnotatedElement element
+            boolean warn
     ) {
-        boolean warn = !element.isAnnotationPresent(DisableInjectionWarn.class);
-
         if (containerType.equals(LazyDependency.class)) {
             return Lazy.of(() -> resolvedInner != null ? resolvedInner : getDependency(targetClass, qualifier, () -> warn));
         }
@@ -1459,7 +1455,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }catch (Exception e){
             String instanceClassName = (instance != null) ? instance.getClass().getName() : "[instancia nula]";
 
-            if(!variable.isAnnotationPresent(DisableInjectionWarn.class)){
+            if(!isInjectionWarnDisabled(variable, instance)){
                 log.error("Erro ao injetar variável '{}' na classe '{}'. Causa: {}",
                         variable.getName(),
                         instanceClassName,
@@ -1468,6 +1464,18 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 );
             }
         }
+    }
+
+    private boolean isInjectionWarnDisabled(AnnotatedElement element, Object instance) {
+        if (element.isAnnotationPresent(DisableInjectionWarn.class)) {
+            return true;
+        }
+
+        Class<?> targetClass = instance instanceof Class<?> clazz
+                ? clazz
+                : instance != null ? instance.getClass() : null;
+
+        return targetClass != null && targetClass.isAnnotationPresent(DisableInjectionWarn.class);
     }
 
     private Object getObjectToInjectVariable(Field variable, Class<?> clazzVariable) throws Exception{
@@ -1917,7 +1925,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         method.invoke(instance);
     }
 
-    private Object[] tryResolveConstructorArgs(Parameter[] parameters, Object[] extraArgs, List<Parameter> failedParams, String ondeEstou) {
+    private Object[] tryResolveConstructorArgs(Parameter[] parameters, Object[] extraArgs, List<Parameter> failedParams, Class<?> clazz) {
         Object[] args = new Object[parameters.length];
 
         List<Object> extras = new ArrayList<>();
@@ -1943,7 +1951,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             if (matchedExtra != null) {
                 args[i] = matchedExtra;
             } else {
-                Object injected = getDependecyObjectByParam(parameter, ondeEstou);
+                Object injected = getDependecyObjectByParam(parameter, clazz);
                 if (injected == null) {
                     if (failedParams != null) {
                         failedParams.add(parameter);

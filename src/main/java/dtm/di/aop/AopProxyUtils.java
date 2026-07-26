@@ -7,6 +7,7 @@ import dtm.di.exceptions.AspectNewInstanceException;
 
 import java.lang.reflect.Parameter;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Callable;
 import java.lang.reflect.Method;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -79,6 +80,33 @@ public class AopProxyUtils extends AopUtils {
     }
 
     /**
+     * Executa os advices {@link OnMainMethod} aplicaveis. A existencia de pelo
+     * menos um deles impede que o interceptor chame o metodo real por conta propria.
+     */
+    @Override
+    public MainMethodResult applyOnMainMethod(
+            Method method,
+            Object[] args,
+            Object proxy,
+            Object realInstance,
+            Callable<?> mainMethod
+    ) throws Exception {
+        boolean intercepted = false;
+        Object result = null;
+
+        for (AspectHandler handler : handlers) {
+            if (handler.main == null || !shouldApplyHandler(handler, method, args, proxy, realInstance)) {
+                continue;
+            }
+
+            intercepted = true;
+            result = executeMethod(handler.instance, handler.main, method, args, proxy, realInstance, null, null, mainMethod);
+        }
+
+        return new MainMethodResult(intercepted, result);
+    }
+
+    /**
      * Executa todos os métodos anotados com {@link AfterExecution} para os aspectos registrados,
      * desde que o {@link Pointcut} (se existir) retorne {@code true}.
      * <p>
@@ -145,7 +173,8 @@ public class AopProxyUtils extends AopUtils {
                             proxy,
                             realInstance,
                             null,
-                            cause
+                            cause,
+                            null
                     );
                 }catch (RuntimeException re){
                     throw re;
@@ -173,7 +202,7 @@ public class AopProxyUtils extends AopUtils {
         for (Class<?> clazz : aspects){
             try{
                 Object instance = dependencyContainer.newInstance(clazz);
-                Method pointcut = null, before = null, after = null, error = null;
+                Method pointcut = null, before = null, after = null, error = null, main = null;
                 for (Method method : clazz.getDeclaredMethods()) {
                     if (method.isAnnotationPresent(Pointcut.class))
                         pointcut = method;
@@ -183,9 +212,11 @@ public class AopProxyUtils extends AopUtils {
                         after = method;
                     else if(method.isAnnotationPresent(AfterException.class))
                         error = method;
+                    else if(method.isAnnotationPresent(OnMainMethod.class))
+                        main = method;
                 }
 
-                handlers.add(new AspectHandler(instance, pointcut, before, after, error));
+                handlers.add(new AspectHandler(instance, pointcut, before, after, error, main));
             }catch (Exception e){
                 throw new AspectNewInstanceException(e.getMessage(), clazz, e);
             }
@@ -237,7 +268,7 @@ public class AopProxyUtils extends AopUtils {
             Object proxy,
             Object realInstance
     ) throws Exception{
-        return executeMethod(instance, methodExecute, methodArgs, args, proxy, realInstance, null, null);
+        return executeMethod(instance, methodExecute, methodArgs, args, proxy, realInstance, null, null, null);
     }
 
     /**
@@ -267,7 +298,7 @@ public class AopProxyUtils extends AopUtils {
             Object realInstance,
             Object currentResult
     ) throws Exception {
-        return executeMethod(instance, methodExecute, methodArgs, args, proxy, realInstance, currentResult, null);
+        return executeMethod(instance, methodExecute, methodArgs, args, proxy, realInstance, currentResult, null, null);
     }
 
     /**
@@ -298,7 +329,8 @@ public class AopProxyUtils extends AopUtils {
             Object proxy,
             Object realInstance,
             Object currentResult,
-            Throwable cause
+            Throwable cause,
+            Callable<?> mainMethod
     ) throws Exception{
         methodExecute.setAccessible(true);
         Parameter[] parameters = methodExecute.getParameters();
@@ -320,6 +352,8 @@ public class AopProxyUtils extends AopUtils {
                 invokeArgs[i] = args;
             }else if(Throwable.class.isAssignableFrom(paramType)){
                 invokeArgs[i] = cause;
+            }else if(Callable.class.isAssignableFrom(paramType)){
+                invokeArgs[i] = mainMethod;
             }else {
                 invokeArgs[i] = null;
             }
@@ -342,7 +376,7 @@ public class AopProxyUtils extends AopUtils {
      * @param before Método anotado com {@link BeforeExecution}.
      * @param after Método anotado com {@link AfterExecution}.
      */
-    public record AspectHandler(Object instance, Method pointcut, Method before, Method after, Method error) {
+    public record AspectHandler(Object instance, Method pointcut, Method before, Method after, Method error, Method main) {
     }
 
     /**

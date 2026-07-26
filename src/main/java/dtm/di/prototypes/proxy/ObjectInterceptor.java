@@ -32,7 +32,8 @@ public class ObjectInterceptor {
         try {
             Object result;
             try{
-                result = zuper.call();
+                AopUtils.MainMethodResult mainMethodResult = aopUtils.applyOnMainMethod(method, args, proxy, realInstance, zuper);
+                result = mainMethodResult.intercepted() ? mainMethodResult.result() : zuper.call();
             }catch (RuntimeException | Error directThrow){
                 throw directThrow;
             }catch (InvocationTargetException invocationTargetException){
