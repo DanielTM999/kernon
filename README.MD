@@ -425,7 +425,8 @@ import java.util.concurrent.Executors;
 @Configuration
 public class AsyncConfig {
 
-    @BeanDefinition
+    // Um único executor deve atender toda a aplicação.
+    @BeanDefinition(proxyType = BeanDefinition.ProxyType.STATIC)
     public AsyncExecutorFactory asyncExecutorFactory() {
         ExecutorService executor = Executors.newFixedThreadPool(4);
         return AsyncExecutorFactory.ofSingleton(executor);
@@ -433,8 +434,12 @@ public class AsyncConfig {
 }
 ```
 
-> Gerencie o ciclo de vida de um executor criado pela aplicação. Por exemplo,
-> mantenha a referência e finalize-o em um método `@PreDestroy`.
+> Registre `AsyncExecutorFactory` como um bean **singleton**. No exemplo,
+> `BeanDefinition.ProxyType.STATIC` garante uma única instância para o
+> container (e já é o padrão de `@BeanDefinition`). Isso evita criar pools de
+> threads a cada resolução da dependência. Gerencie também o ciclo de vida do
+> executor criado pela aplicação — por exemplo, mantenha a referência e
+> finalize-o em um método `@PreDestroy`.
 
 ### Limitações importantes
 
@@ -442,9 +447,10 @@ public class AsyncConfig {
   ser declarada em classes, a interceptação atual é feita no método anotado.
 - AOP deve estar ativo; `@DisableAop` no bean ou no método impede a
   interceptação.
-- Chamadas internas como `this.export(...)` não passam pelo proxy e, por isso,
-  não são assíncronas. Injete o bean em outro componente (ou reorganize a
-  responsabilidade) para chamar o método pelo container.
+- Chamadas aninhadas como `this.export(...)` são suportadas: dentro de um bean
+  já criado, `this` referencia o proxy e o método anotado continua sendo
+  executado de forma assíncrona. A exceção são os construtores, pois o proxy
+  ainda não foi criado nessa fase; não invoque métodos `@Async` a partir deles.
 - Não chame `await()` na mesma thread quando isso eliminar o benefício da
   execução assíncrona.
 
