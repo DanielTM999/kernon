@@ -240,7 +240,7 @@ public class AppLifecycle {
 }
 ```
 
-## ⚙ Fluxo de Execução Garantido
+## Fluxo de Execução Garantido
 
 ### Ordem Estrita de Processamento
 1. `BEFORE_ALL`  
