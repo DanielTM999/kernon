@@ -299,7 +299,7 @@ public class AppMain {
     
 ```
 
-### ⚙ Detalhes de `@ScheduleMethod`
+### Detalhes de `@ScheduleMethod`
 
 | Parâmetro    | Descrição                                                                 |
 |--------------|---------------------------------------------------------------------------|
