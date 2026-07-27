@@ -319,17 +319,25 @@ public class AppMain {
 - Se `@EnableSchedule` não estiver presente, nenhuma tarefa será executada, mesmo com `@Schedule`.
 
 
-# Execução Assíncrona de Métodos (`@Async`)
+# Execução Assíncrona com `@Async`
 
-Use `@Async` para deslocar a execução de um método de um bean gerenciado para
-um executor, sem bloquear quem o chamou. O recurso é implementado como um
-aspecto de AOP; portanto, precisa ser habilitado no boot e o método deve ser
-chamado por meio da instância fornecida pelo container.
+Use `@Async` em dois cenários diferentes:
+
+- Em **métodos**, para deslocar a execução de um método de um bean gerenciado
+  para um executor, sem bloquear quem o chamou.
+- Em **classes/beans**, para criar o bean em segundo plano e expor sua
+  resolução como `AsyncComponent<T>`.
+
+O modo por método é implementado como um aspecto de AOP; portanto, precisa ser
+habilitado no boot e o método deve ser chamado por meio da instância fornecida
+pelo container. O modo por classe participa do carregamento do container e
+registra a dependência como `AsyncComponent<T>`.
 
 ## Habilitando
 
-Adicione `@EnableAsync` à classe anotada com `@ApplicationBoot` (ou à classe
-de configuração usada por ela):
+Para métodos anotados com `@Async`, adicione `@EnableAsync` à classe anotada
+com `@ApplicationBoot` (ou à classe de configuração usada por ela), pois esse
+modo depende de AOP:
 
 ```java
 import dtm.di.annotations.aop.EnableAsync;
@@ -344,7 +352,11 @@ public class MainApplication {
 }
 ```
 
-## Exemplo de uso
+Para classes/beans anotados com `@Async`, não há uma habilitação específica:
+basta que a classe também seja um bean descoberto pelo container, por exemplo
+com `@Component` ou `@Service`.
+
+## Métodos assíncronos
 
 ```java
 import dtm.di.annotations.Async;
@@ -388,6 +400,89 @@ Os tipos de retorno aceitos são:
 
 Qualquer outro retorno é inválido e causa `AsyncMethodException` quando o
 método é interceptado.
+
+## Beans assíncronos
+
+Quando `@Async` é aplicado na classe, o container instancia esse bean em
+segundo plano durante o carregamento. O bean não é registrado diretamente pelo
+tipo concreto; ele é registrado como `AsyncComponent<T>`, e o resultado real é
+obtido por `getAsync()`.
+
+```java
+import dtm.di.annotations.Async;
+import dtm.di.annotations.Component;
+
+@Async
+@Component
+public class CacheWarmupService {
+
+    public CacheWarmupService() {
+        // inicialização custosa
+    }
+
+    public void warmup() {
+        // prepara caches
+    }
+}
+```
+
+Consuma o bean assíncrono injetando `AsyncComponent<T>`:
+
+```java
+import dtm.di.annotations.Inject;
+import dtm.di.annotations.Service;
+import dtm.di.prototypes.async.AsyncComponent;
+
+@Service
+public class StartupService {
+
+    @Inject
+    private AsyncComponent<CacheWarmupService> cacheWarmup;
+
+    public void start() {
+        cacheWarmup.getAsync()
+                .onSuccess(CacheWarmupService::warmup)
+                .onError(error -> logger.error("Falha ao carregar cache", error));
+    }
+}
+```
+
+Se você estiver usando o container diretamente, também pode resolver pelo tipo:
+
+```java
+AsyncComponent<CacheWarmupService> cacheWarmup =
+        container.getDependencyAsync(CacheWarmupService.class, true);
+
+CacheWarmupService service = cacheWarmup.getAsync().await();
+```
+
+Também é possível registrar um bean assíncrono por configuração usando
+`ComponentRegistor.ofAsync(...)`. Esse caminho é útil quando a criação do bean
+depende de uma factory, de um `Supplier` ou de um executor específico:
+
+```java
+import dtm.di.annotations.BeanDefinition;
+import dtm.di.annotations.Configuration;
+import dtm.di.common.ComponentRegistor;
+import dtm.di.prototypes.async.AsyncRegistrationFunction;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+@Configuration
+public class CacheConfig {
+
+    @BeanDefinition
+    public AsyncRegistrationFunction<CacheClient> cacheClient() {
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+
+        return ComponentRegistor.ofAsync(
+                CacheClient.class,
+                () -> new CacheClient("localhost"),
+                executor
+        );
+    }
+}
+```
 
 ### Consumindo resultado e erros
 
@@ -443,10 +538,13 @@ public class AsyncConfig {
 
 ### Limitações importantes
 
-- `@Async` atua em **métodos** de beans gerenciados; apesar de a anotação poder
-  ser declarada em classes, a interceptação atual é feita no método anotado.
-- AOP deve estar ativo; `@DisableAop` no bean ou no método impede a
-  interceptação.
+- Em métodos, AOP deve estar ativo; `@DisableAop` no bean ou no método impede
+  a interceptação.
+- Em classes, `@Async` registra a dependência como `AsyncComponent<T>`. Injete
+  ou resolva `AsyncComponent<T>` quando quiser acompanhar a criação do bean.
+- `AsyncComponent<T>.getAsync().await()` bloqueia até a criação terminar; use
+  callbacks como `onSuccess`/`onError` quando quiser manter o fluxo não
+  bloqueante.
 - Chamadas aninhadas como `this.export(...)` são suportadas: dentro de um bean
   já criado, `this` referencia o proxy e o método anotado continua sendo
   executado de forma assíncrona. A exceção são os construtores, pois o proxy

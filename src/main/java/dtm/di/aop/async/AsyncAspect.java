@@ -1,6 +1,7 @@
 package dtm.di.aop.async;
 
 import dtm.di.annotations.Async;
+import dtm.di.annotations.Configuration;
 import dtm.di.annotations.DisableInjectionWarn;
 import dtm.di.annotations.aop.*;
 import dtm.di.exceptions.AsyncMethodException;
@@ -8,6 +9,7 @@ import dtm.di.prototypes.async.AsyncResult;
 import dtm.di.settings.async.AsyncExecutorFactory;
 import dtm.di.storage.async.AsyncResultWrapper;
 import java.lang.reflect.Method;
+import java.util.Map;
 import java.util.concurrent.*;
 
 @Aspect
@@ -15,6 +17,8 @@ import java.util.concurrent.*;
 public class AsyncAspect {
 
     private final AsyncExecutorFactory asyncExecutorFactory;
+    private final Map<Method, Boolean> asyncMethodCache = new ConcurrentHashMap<>();
+    private final Map<Class<?>, Boolean> configurationClassCache = new ConcurrentHashMap<>();
 
     public AsyncAspect(@DisableInjectionWarn AsyncExecutorFactory asyncExecutorFactory) {
         this.asyncExecutorFactory = (asyncExecutorFactory != null) ? asyncExecutorFactory : AsyncExecutorFactory.ofSingleton(ForkJoinPool.commonPool());
@@ -22,7 +26,22 @@ public class AsyncAspect {
 
     @Pointcut
     public boolean pointcut(Method method, @ReferenceInstance Object instance) {
-        return method.isAnnotationPresent(Async.class);
+        Class<?> clazz = instance.getClass();
+        boolean asyncMethod = asyncMethodCache.computeIfAbsent(
+                method,
+                key -> key.isAnnotationPresent(Async.class)
+        );
+
+        if (!asyncMethod) {
+            return false;
+        }
+
+        boolean configurationClass = configurationClassCache.computeIfAbsent(
+                clazz,
+                key -> key.isAnnotationPresent(Configuration.class)
+        );
+
+        return !configurationClass;
     }
 
     @OnMainMethod
