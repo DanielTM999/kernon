@@ -61,11 +61,11 @@ Anote sua classe principal(a com o main(String[] args)) com `@ApplicationBoot`:
 import dtm.di.application.startup.ManagedApplication;
 import dtm.di.annotations.boot.ApplicationBoot;
 
-@ApplicationBoot
+@ApplicationBoot(MyApp.class)
 public class MyApp {
   public static void main(String[] args) {
     boolean log = true;
-    ManagedApplication.doRun(log); // true para habilitar logs
+    ManagedApplication.doRun(log, args); // true para habilitar logs
   }
 }
 ```
@@ -85,7 +85,7 @@ import dtm.di.annotations.boot.ApplicationBoot;
 @ApplicationBoot(AppBootConfig.class)  // Classe de configuração externa
 public class MainApplication {
   public static void main(String[] args) {
-    ManagedApplication.doRun(true);
+    ManagedApplication.doRun(true, args);
   }
 }
 ```
@@ -111,6 +111,72 @@ import dtm.di.annotations.boot.ApplicationBoot;
 //Apenas uma
 public class Main{}
 ```
+
+# Importando Módulos e Configurações Externas (`@Import`)
+
+`@Import` informa explicitamente ao container quais classes também devem entrar
+na análise durante o boot. Ao encontrar a anotação, o Kernon adiciona cada
+classe indicada à fila de varredura e continua analisando os seus próprios
+`@Import`s. Assim, ele permite compor módulos de forma explícita — inclusive
+quando eles vêm de outro JAR ou estão fora do pacote base da aplicação.
+
+Isso é especialmente importante em projetos externos e bibliotecas: a
+aplicação consumidora não precisa ampliar o package scan, nem conhecer cada
+`@Service` interno do módulo. Ela importa apenas a classe pública de
+configuração que o módulo expõe.
+
+```java
+import dtm.di.annotations.Configuration;
+import dtm.di.annotations.Import;
+import com.acme.audit.AuditModuleConfig; // classe disponível em outra dependência/JAR
+import com.acme.payment.PaymentModuleConfig;
+
+@Configuration
+@Import({AuditModuleConfig.class, PaymentModuleConfig.class})
+public class AppBootConfig {
+}
+```
+
+No JAR externo, a configuração pode por sua vez declarar beans, importar
+outros módulos ou servir como ponto de entrada para os componentes daquela
+biblioteca:
+
+```java
+package com.acme.audit;
+
+import dtm.di.annotations.BeanDefinition;
+import dtm.di.annotations.Configuration;
+import dtm.di.annotations.Import;
+
+@Configuration
+@Import(AuditPersistenceConfig.class)
+public class AuditModuleConfig {
+
+    @BeanDefinition
+    public AuditClient auditClient() {
+        return new AuditClient();
+    }
+}
+```
+
+### O que o `@Import` faz — e o que ele não faz
+
+- Carrega as classes indicadas para que sejam processadas pelo DI, mesmo fora
+  do escopo normal de descoberta.
+- Suporta importações transitivas: `AppBootConfig` importa `AuditModuleConfig`,
+  que pode importar `AuditPersistenceConfig`.
+- É indicado para classes de configuração (`@Configuration`), aspectos e
+  módulos reutilizáveis. O próprio `@EnableAsync` usa esse mecanismo para
+  registrar o `AsyncAspect`.
+- Não cria um bean automaticamente só por citar uma classe. A classe importada
+  ainda deve expor uma definição reconhecida pelo Kernon, por exemplo
+  `@Configuration` com `@BeanDefinition`, `@Component` ou `@Service`.
+- Evite ciclos de importação, como `A → B → A`; organize um módulo raiz para
+  manter a composição clara.
+
+> Para bibliotecas, prefira publicar uma única classe `...ModuleConfig` como
+> API de integração. Isso reduz o acoplamento da aplicação cliente aos pacotes
+> internos e mantém o boot previsível.
 
 # Anotações de Ciclo de Vida: `@OnBoot` e `@LifecycleHook`
 
@@ -251,6 +317,136 @@ public class AppMain {
 - O framework utiliza um `ScheduledThreadPoolExecutor` interno.
 - Métodos agendados são executados **assíncronamente** após a finalização do método `@OnBoot`.
 - Se `@EnableSchedule` não estiver presente, nenhuma tarefa será executada, mesmo com `@Schedule`.
+
+
+# Execução Assíncrona de Métodos (`@Async`)
+
+Use `@Async` para deslocar a execução de um método de um bean gerenciado para
+um executor, sem bloquear quem o chamou. O recurso é implementado como um
+aspecto de AOP; portanto, precisa ser habilitado no boot e o método deve ser
+chamado por meio da instância fornecida pelo container.
+
+## Habilitando
+
+Adicione `@EnableAsync` à classe anotada com `@ApplicationBoot` (ou à classe
+de configuração usada por ela):
+
+```java
+import dtm.di.annotations.aop.EnableAsync;
+import dtm.di.annotations.boot.ApplicationBoot;
+
+@EnableAsync
+@ApplicationBoot(AppBootConfig.class)
+public class MainApplication {
+    public static void main(String[] args) {
+        ManagedApplication.doRun(true);
+    }
+}
+```
+
+## Exemplo de uso
+
+```java
+import dtm.di.annotations.Async;
+import dtm.di.annotations.Service;
+import dtm.di.prototypes.async.AsyncResult;
+import java.util.concurrent.CompletableFuture;
+
+@Service
+public class ReportService {
+
+    @Async
+    public void generateAndStore(long reportId) {
+        // retorna imediatamente; o trabalho continua em outra thread
+        performGenerate(reportId);
+    }
+
+    @Async
+    public CompletableFuture<String> generate(long reportId) {
+        return CompletableFuture.completedFuture("report-" + reportId);
+    }
+
+    @Async
+    public AsyncResult<String> export(long reportId) {
+        return AsyncResult.ofResult("report-" + reportId + ".csv");
+    }
+
+    private void performGenerate(long reportId) {
+        // geração do relatório
+    }
+}
+```
+
+Os tipos de retorno aceitos são:
+
+| Retorno | Comportamento para quem chama |
+|---|---|
+| `void` ou `Void` | Retorna imediatamente. Exceções da tarefa não são devolvidas ao chamador. |
+| `CompletableFuture<T>` ou `CompletionStage<T>` | Retorna um `CompletableFuture` que conclui com o resultado ou a exceção. |
+| `Future<T>` | Retorna um `Future` submetido ao executor. |
+| `AsyncResult<T>` | Retorna a API fluente do Kernon: `onSuccess`, `onError`, `thenApply`, `whenComplete` e `await`. |
+
+Qualquer outro retorno é inválido e causa `AsyncMethodException` quando o
+método é interceptado.
+
+### Consumindo resultado e erros
+
+```java
+@Service
+public class NotificationService {
+
+    @Inject
+    private ReportService reports;
+
+    public void notifyUser(long reportId) {
+        reports.export(reportId)
+                .thenApply(path -> "Arquivo pronto: " + path)
+                .onSuccess(System.out::println)
+                .onError(error -> logger.error("Falha ao exportar", error));
+    }
+}
+```
+
+Para `CompletableFuture`, use normalmente `thenAccept`, `exceptionally` ou
+`whenComplete`. Para `AsyncResult`, `await()` bloqueia até a conclusão e, em
+caso de falha, propaga uma `CompletionException`.
+
+### Executor padrão e personalizado
+
+Sem configuração adicional, o `@Async` usa o `ForkJoinPool.commonPool()`. Para
+usar um pool da aplicação, registre um `AsyncExecutorFactory` no container:
+
+```java
+import dtm.di.annotations.*;
+import dtm.di.settings.async.AsyncExecutorFactory;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+@Configuration
+public class AsyncConfig {
+
+    @BeanDefinition
+    public AsyncExecutorFactory asyncExecutorFactory() {
+        ExecutorService executor = Executors.newFixedThreadPool(4);
+        return AsyncExecutorFactory.ofSingleton(executor);
+    }
+}
+```
+
+> Gerencie o ciclo de vida de um executor criado pela aplicação. Por exemplo,
+> mantenha a referência e finalize-o em um método `@PreDestroy`.
+
+### Limitações importantes
+
+- `@Async` atua em **métodos** de beans gerenciados; apesar de a anotação poder
+  ser declarada em classes, a interceptação atual é feita no método anotado.
+- AOP deve estar ativo; `@DisableAop` no bean ou no método impede a
+  interceptação.
+- Chamadas internas como `this.export(...)` não passam pelo proxy e, por isso,
+  não são assíncronas. Injete o bean em outro componente (ou reorganize a
+  responsabilidade) para chamar o método pelo container.
+- Não chame `await()` na mesma thread quando isso eliminar o benefício da
+  execução assíncrona.
 
 
 # Resolução de Dependências Ambíguas (`@Primary`)

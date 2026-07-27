@@ -4,7 +4,9 @@ import dtm.di.annotations.Async;
 import dtm.di.annotations.DisableInjectionWarn;
 import dtm.di.annotations.aop.*;
 import dtm.di.exceptions.AsyncMethodException;
+import dtm.di.prototypes.async.AsyncResult;
 import dtm.di.settings.async.AsyncExecutorFactory;
+import dtm.di.storage.async.AsyncResultWrapper;
 import java.lang.reflect.Method;
 import java.util.concurrent.*;
 
@@ -41,9 +43,16 @@ public class AsyncAspect {
             return executor.submit(() -> unwrapFuture(callable.call()));
         }
 
+        if (returnType == AsyncResult.class) {
+            return new AsyncResultWrapper<>(submitCompletable(
+                    () -> unwrapAsyncResult(callable.call()),
+                    executor
+            ));
+        }
+
         throw new AsyncMethodException(
                 "Métodos anotados com @Async devem retornar "
-                        + "void, Future ou CompletableFuture: "
+                        + "void, Future, CompletableFuture ou AsyncResult: "
                         + method.toGenericString(),
                 method,
                 instance.getClass()
@@ -84,6 +93,14 @@ public class AsyncAspect {
     private static Object unwrapFuture(Object result) throws Exception {
         if (result instanceof Future<?> future) {
             return future.get();
+        }
+
+        return result;
+    }
+
+    private static Object unwrapAsyncResult(Object result) {
+        if (result instanceof AsyncResult<?> asyncResult) {
+            return asyncResult.await();
         }
 
         return result;
