@@ -16,7 +16,10 @@ import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 /**
  * Implementação padrão de {@link AppSettings}, somente leitura, ancorada em um
@@ -48,30 +51,75 @@ public class JsonAppSettings implements AppSettings {
     }
 
     public JsonAppSettings(String resourceName) {
-        this.resourceName = resourceName;
-        this.root = loadFromClasspath();
+        this(resourceName, new String[0]);
     }
 
-    private ObjectNode loadFromClasspath() {
+    public JsonAppSettings(String resourceName, String... profiles) {
+        this.resourceName = resourceName;
+        this.root = loadFromClasspath(profiles);
+    }
+
+    private ObjectNode loadFromClasspath(String... profiles) {
         ClassLoader cl = Thread.currentThread().getContextClassLoader();
         if (cl == null) cl = JsonAppSettings.class.getClassLoader();
 
-        try (InputStream in = cl.getResourceAsStream(resourceName)) {
+        ObjectNode settings = loadResource(cl, resourceName, true);
+        for (String profile : normalizeProfiles(profiles)) {
+            ObjectNode profileSettings = loadResource(cl, profileResourceName(profile), false);
+            if (profileSettings != null) merge(settings, profileSettings);
+        }
+        return settings;
+    }
+
+    private ObjectNode loadResource(ClassLoader cl, String name, boolean required) {
+        try (InputStream in = cl.getResourceAsStream(name)) {
             if (in == null) {
-                log.warn("Recurso '{}' não encontrado no classpath. Todas as leituras usarão defaults.", resourceName);
+                if (!required) return null;
+                log.warn("Recurso '{}' não encontrado no classpath. Todas as leituras usarão defaults.", name);
                 return JsonNodeFactory.instance.objectNode();
             }
             String content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             if (content.isBlank()) return JsonNodeFactory.instance.objectNode();
             JsonNode node = mapper.readTree(content);
             if (node == null || !node.isObject()) {
-                log.warn("'{}' não é um objeto JSON. Usando configuração vazia.", resourceName);
+                log.warn("'{}' não é um objeto JSON. Usando configuração vazia.", name);
                 return JsonNodeFactory.instance.objectNode();
             }
             return (ObjectNode) node;
         } catch (IOException | JacksonException e) {
-            log.error("Falha ao ler '{}' do classpath: {}. Usando configuração vazia.", resourceName, e.getMessage());
+            log.error("Falha ao ler '{}' do classpath: {}. Usando configuração vazia.", name, e.getMessage());
             return JsonNodeFactory.instance.objectNode();
+        }
+    }
+
+    private String profileResourceName(String profile) {
+        int separator = resourceName.lastIndexOf('/');
+        int extension = resourceName.lastIndexOf('.');
+        if (extension <= separator) return resourceName + "." + profile;
+        return resourceName.substring(0, extension) + "." + profile + resourceName.substring(extension);
+    }
+
+    private List<String> normalizeProfiles(String... profiles) {
+        if (profiles == null || profiles.length == 0) return List.of();
+        return Arrays.stream(profiles)
+                .filter(Objects::nonNull)
+                .flatMap(profile -> Arrays.stream(profile.split(",")))
+                .map(String::trim)
+                .filter(profile -> !profile.isEmpty())
+                .distinct()
+                .toList();
+    }
+
+    private void merge(ObjectNode target, ObjectNode source) {
+        for (Map.Entry<String, JsonNode> property : source.properties()) {
+            String name = property.getKey();
+            JsonNode value = property.getValue();
+            JsonNode current = target.get(name);
+            if (current != null && current.isObject() && value.isObject()) {
+                merge((ObjectNode) current, (ObjectNode) value);
+            } else {
+                target.set(name, value.deepCopy());
+            }
         }
     }
 

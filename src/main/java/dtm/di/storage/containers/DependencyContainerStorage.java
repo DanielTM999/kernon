@@ -2194,7 +2194,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             Map<String, Dependency> existing = dependencyContainer.get(AppSettings.class);
             if(existing != null && !existing.isEmpty()) return;
 
-            JsonAppSettings settings = new JsonAppSettings();
+            JsonAppSettings settings = new JsonAppSettings(
+                    JsonAppSettings.DEFAULT_RESOURCE_NAME,
+                    profiles.toArray(String[]::new)
+            );
             registerObject(settings, "default", false);
         }catch (Exception e){
             log.error("Falha ao registrar AppSettings padrão: {}", e.getMessage(), e);
