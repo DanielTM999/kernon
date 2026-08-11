@@ -720,7 +720,10 @@ public class ManagedApplication {
     }
 
     private static void stopSchedulerGracefully(){
-        scheduledExecutorService.shutdown();
+        ScheduledExecutorService scheduler = scheduledExecutorService;
+        if (scheduler != null) {
+            scheduler.shutdown();
+        }
     }
 
     private static void defineControllerAdviceAsync(){
