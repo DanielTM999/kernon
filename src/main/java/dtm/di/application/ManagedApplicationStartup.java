@@ -17,7 +17,19 @@ public class ManagedApplicationStartup {
     }
 
     public static void doRun(boolean log, String[] args){
-        ManagedApplication.doRun(log, args);
+        doRun(log, args, null);
+    }
+
+    /**
+     * Inicializa a aplicação usando a classe principal informada. Quando {@code mainClass}
+     * for {@code null}, a classe principal será identificada automaticamente.
+     *
+     * @param log habilita os logs de inicialização
+     * @param args argumentos de inicialização
+     * @param mainClass classe principal opcional da aplicação
+     */
+    public static void doRun(boolean log, String[] args, Class<?> mainClass){
+        ManagedApplication.doRun(log, args, mainClass);
     }
 
 }

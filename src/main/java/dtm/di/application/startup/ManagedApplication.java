@@ -75,18 +75,22 @@ public class ManagedApplication {
     }
 
     public static void doRun(boolean log, String[] args){
+        doRun(log, args, null);
+    }
+
+    public static void doRun(boolean log, String[] args, Class<?> mainClass){
         launchArgsRef.set(args);
         uncaughtExceptionHandler.set(Thread.getDefaultUncaughtExceptionHandler());
         handlerInvoker.set(getDefaultExceptionHandlerInvoker());
         setExceptionHandler();
         logEnabled = log;
         logInfo("Iniciando doRun()");
-        mainClass = getMainClass();
-        if(mainClass == null) {
+        ManagedApplication.mainClass = (mainClass != null) ? mainClass : getMainClass();
+        if(ManagedApplication.mainClass == null) {
             logError("Classe main não encontrada");
             throw new InvalidBootException("Classe main não encontrado");
         }
-        logInfo("Classe main encontrada: {}", mainClass.getName());
+        logInfo("Classe main encontrada: {}", ManagedApplication.mainClass.getName());
 
         bootableClass = getBootableClass();
         logInfo("Classe bootable definida: {}", bootableClass.getName());
