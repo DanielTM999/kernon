@@ -244,10 +244,45 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
             DefaultEventPublisher publisher = new DefaultEventPublisher(this, mainExecutor);
             registerObject(publisher, "default", false);
-            publisher.scan();
+            publisher.scan(getLoadedEventListeners());
         }catch (Exception e){
             log.error("Falha ao registrar EventPublisher: {}", e.getMessage(), e);
         }
+    }
+
+    /**
+     * Obtém apenas os beans com listeners declarativos já carregados. O
+     * EventPublisher não pode usar getInstancesByClass(Object.class) aqui,
+     * pois isso tentaria criar todos os beans enquanto ele próprio ainda está
+     * sendo inicializado, permitindo ciclos de injeção.
+     */
+    private List<Object> getLoadedEventListeners() {
+        List<Object> listeners = new ArrayList<>();
+        Set<Object> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+
+        for (Map.Entry<Class<?>, Map<String, Dependency>> entry : dependencyContainer.entrySet()) {
+            if (!AnnotationsUtils.hasMetaAnnotation(entry.getKey(), Event.class)) {
+                continue;
+            }
+
+            for (Dependency dependency : entry.getValue().values()) {
+                try {
+                    Object instance = dependency.getDependency();
+                    if (instance != null && visited.add(instance)) {
+                        listeners.add(instance);
+                    }
+                } catch (Exception e) {
+                    log.error(
+                            "Falha ao obter listener de evento '{}': {}",
+                            entry.getKey().getName(),
+                            e.getMessage(),
+                            e
+                    );
+                }
+            }
+        }
+
+        return listeners;
     }
 
     @Override

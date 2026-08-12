@@ -179,8 +179,21 @@ public class DefaultEventPublisher implements EventPublisher, EventListenerPubli
         }
 
         Map<Class<Object>, Object> all = container.getInstancesByClass(Object.class);
+        scan(all == null ? List.of() : all.values());
+    }
 
-        if (all == null || all.isEmpty()) {
+    /**
+     * Indexa uma lista conhecida de beans sem solicitar que o container crie
+     * outros beans durante a inicialização do publisher.
+     *
+     * @param beans instâncias que podem conter métodos {@link EventListener}
+     */
+    public synchronized void scan(Iterable<?> beans) {
+        if (scanned) {
+            return;
+        }
+
+        if (beans == null) {
             scanned = true;
             return;
         }
@@ -188,7 +201,7 @@ public class DefaultEventPublisher implements EventPublisher, EventListenerPubli
         List<Binding> collected = new ArrayList<>();
         Set<Object> visited = Collections.newSetFromMap(new IdentityHashMap<>());
 
-        for (Object bean : all.values()) {
+        for (Object bean : beans) {
             if (bean == null || !visited.add(bean)) {
                 continue;
             }
