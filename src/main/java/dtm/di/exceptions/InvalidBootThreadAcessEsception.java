@@ -17,7 +17,6 @@ public class InvalidBootThreadAcessEsception extends RuntimeException {
                     "'ManagedApplicationStartup.doRun' para o bootstrap.";
         }
 
-        // Default: Inglês
         return "Invalid BootThread access attempt: Access denied because the application " +
                 "has not been initialized or was started without using 'ManagedApplicationStartup.doRun'.";
     }

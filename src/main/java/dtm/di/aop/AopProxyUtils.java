@@ -201,7 +201,10 @@ public class AopProxyUtils extends AopUtils {
 
         for (Class<?> clazz : aspects){
             try{
-                Object instance = dependencyContainer.newInstance(clazz);
+                Object instance = dependencyContainer.getDependency(clazz);
+                if (instance == null) {
+                    instance = dependencyContainer.newInstance(clazz);
+                }
                 Method pointcut = null, before = null, after = null, error = null, main = null;
                 for (Method method : clazz.getDeclaredMethods()) {
                     if (method.isAnnotationPresent(Pointcut.class))

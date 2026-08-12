@@ -837,6 +837,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private void filterServiceClass(){
         final Set<Class<?>> serviceLoadedClassActive = getConcreteServiceLoadedClass(Component.class);
+        serviceLoadedClassActive.addAll(getConcreteServiceLoadedClass(Aspect.class));
 
         final int total = serviceLoadedClassActive.size();
 
@@ -1309,7 +1310,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }else{
             return getDependency(paramtrizedObject.getBaseClass(), () -> {
                 return !disableWarn;
-            });
+            }, describeInjectionOrigin(parameter, instance));
         }
     }
 
@@ -1320,7 +1321,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         if(paramtrizedObject.isParametrized()){
             return getParamObject(paramtrizedObject.getBaseClass(), paramtrizedObject.getParamType(), variable, true, instance, disableWarn);
         }else{
-            return getDependency(paramtrizedObject.getBaseClass(), () -> !disableWarn);
+            return getDependency(paramtrizedObject.getBaseClass(), () -> !disableWarn, describeInjectionOrigin(variable, instance));
         }
     }
 
@@ -1354,7 +1355,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private Object resolveNestedObject(Type type, AnnotatedElement element, String qualifier, Object instance, boolean warn) {
         if (!(type instanceof ParameterizedType paramType)) {
-            return getDependency((Class<?>) type, qualifier, () -> warn);
+            return getDependency((Class<?>) type, qualifier, () -> warn, describeInjectionOrigin(element, instance));
         }
 
         Class<?> nextRaw = (Class<?>) paramType.getRawType();
@@ -2078,10 +2079,18 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
 
     private <T> T getDependency(Class<T> reference, Supplier<Boolean> showWarnIfError) {
-        return getDependency(reference, getQualifierName(reference), showWarnIfError);
+        return getDependency(reference, getQualifierName(reference), showWarnIfError, null);
     }
 
     private <T> T getDependency(Class<T> reference, String qualifier, Supplier<Boolean> showWarnIfError) {
+        return getDependency(reference, qualifier, showWarnIfError, null);
+    }
+
+    private <T> T getDependency(Class<T> reference, Supplier<Boolean> showWarnIfError, String origin) {
+        return getDependency(reference, getQualifierName(reference), showWarnIfError, origin);
+    }
+
+    private <T> T getDependency(Class<T> reference, String qualifier, Supplier<Boolean> showWarnIfError, String origin) {
         try{
             final Map<String, Dependency> listOfDependency = getDependencyMap(reference);
             final Dependency dependencyObject = resolveWithPrimary(reference, listOfDependency, qualifier);
@@ -2095,10 +2104,31 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             if(showWarnIfError == null) showWarnIfError = () -> true;
 
             Boolean showWarn = showWarnIfError.get();
-            if(Boolean.TRUE.equals(showWarn)) log.error("Erro ao obter dependência: reference={}, qualifier={}, msg={}", reference.getName(), qualifier, e.getMessage(), e);
+            if(Boolean.TRUE.equals(showWarn)) log.error("Erro ao obter dependência: reference={}, qualifier={}, origem={}, msg={}", reference.getName(), qualifier, origin, e.getMessage(), e);
 
             return null;
         }
+    }
+
+    private String describeInjectionOrigin(AnnotatedElement element, Object instance) {
+        String owner = instance instanceof Class<?> clazz
+                ? clazz.getName()
+                : instance != null ? instance.getClass().getName() : "desconhecido";
+
+        if (element instanceof Field field) {
+            return "campo '" + field.getName() + "' de " + owner;
+        }
+
+        if (element instanceof Parameter parameter) {
+            Executable executable = parameter.getDeclaringExecutable();
+            String member = executable instanceof Constructor<?>
+                    ? "construtor"
+                    : "método '" + executable.getName() + "'";
+            return member + " de " + owner + ", parâmetro '" + parameter.getName()
+                    + "' (" + parameter.getType().getName() + ")";
+        }
+
+        return "elemento de " + owner;
     }
 
     private <T> List<T> getDependencyListSelf(Class<T> reference) {
