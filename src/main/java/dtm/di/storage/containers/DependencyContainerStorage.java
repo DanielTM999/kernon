@@ -224,9 +224,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             loaded.set(true);
             registerExternalBeens(externalBeenBefore);
             registerAppSettingsIfAbsent();
+            registerEventPublisher();
             loadBeens();
             registerExternalBeens(externalBeenAfter);
-            registerEventPublisher();
+            scanEventListeners();
         }catch (Exception e){
            throw new UnloadError("load error", e);
         }
@@ -244,7 +245,6 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
             DefaultEventPublisher publisher = new DefaultEventPublisher(this, mainExecutor);
             registerObject(publisher, "default", false);
-            publisher.scan(getLoadedEventListeners());
         }catch (Exception e){
             log.error("Falha ao registrar EventPublisher: {}", e.getMessage(), e);
         }
@@ -255,6 +255,18 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
      * EventPublisher não pode usar getInstancesByClass(Object.class) aqui,
      * pois isso tentaria criar todos os beans enquanto ele próprio ainda está
      * sendo inicializado, permitindo ciclos de injeção.
+     */
+    private void scanEventListeners() {
+        DefaultEventPublisher publisher = getDefaultEventPublisher();
+        if (publisher != null) {
+            publisher.scan(getLoadedEventListeners());
+        }
+    }
+
+    /**
+     * Retorna somente os beans declarados para escutar eventos. Isso evita que
+     * a inicialização do EventPublisher force a criação de todos os serviços
+     * e aspectos registrados no container.
      */
     private List<Object> getLoadedEventListeners() {
         List<Object> listeners = new ArrayList<>();
@@ -272,11 +284,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                         listeners.add(instance);
                     }
                 } catch (Exception e) {
-                    log.error(
+                    log.warn(
                             "Falha ao obter listener de evento '{}': {}",
                             entry.getKey().getName(),
-                            e.getMessage(),
-                            e
+                            e.getMessage()
                     );
                 }
             }
@@ -791,7 +802,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     Class<?> fieldClass = f.getType();
                     return f.isAnnotationPresent(Inject.class) && !(
                             fieldClass.isInterface() ||
-                                    !fieldClass.isEnum() ||
+                                    fieldClass.isEnum() ||
                                     fieldClass.isAnnotation() ||
                                     Modifier.isAbstract(fieldClass.getModifiers())
                     );
