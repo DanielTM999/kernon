@@ -8,6 +8,7 @@ import dtm.di.annotations.handler.ExceptionHandler;
 import dtm.di.annotations.schedule.EnableSchedule;
 import dtm.di.annotations.aop.DisableAop;
 import dtm.di.annotations.boot.ApplicationBoot;
+import dtm.di.annotations.boot.ApplicationEntryPoint;
 import dtm.di.annotations.boot.LifecycleHook;
 import dtm.di.annotations.boot.OnBoot;
 import dtm.di.annotations.scanner.PackageScanIgnore;
@@ -152,6 +153,15 @@ public class ManagedApplication {
 
     private static Class<?> getMainClass(){
         StackTraceElement[] stack = Thread.currentThread().getStackTrace();
+        for (int i = stack.length - 1; i >= 0; i--) {
+            try {
+                Class<?> clazz = Class.forName(stack[i].getClassName());
+                if (clazz.isAnnotationPresent(ApplicationEntryPoint.class)) {
+                    return clazz;
+                }
+            } catch (Exception ignored) {}
+        }
+
         for (int i = stack.length - 1; i >= 0; i--) {
             try {
                 Class<?> clazz = Class.forName(stack[i].getClassName());
