@@ -13,6 +13,7 @@ public class BeanInfo {
     private Class<?> producedType;
     private Class<?> configClass;
     private Method method;
+    private Set<Class<?>> dependencyTypes;
     private Set<String> dependencies;
     private boolean singleton;
     private boolean aop;

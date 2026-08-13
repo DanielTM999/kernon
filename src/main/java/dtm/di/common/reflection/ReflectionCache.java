@@ -6,6 +6,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -95,6 +96,22 @@ public final class ReflectionCache {
      */
     public static void clear() {
         CACHE.clear();
+    }
+
+    public static void clear(Class<?> clazz) {
+        if (clazz == null) {
+            return;
+        }
+        CACHE.remove(clazz);
+    }
+
+    public static void clear(Collection<Class<?>> classes) {
+        if (classes == null) {
+            return;
+        }
+        for (Class<?> clazz : classes) {
+            clear(clazz);
+        }
     }
 
     private static ClassMetadata metadata(Class<?> clazz) {

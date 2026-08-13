@@ -37,14 +37,15 @@ public class BeanDependencyGraphBuilder {
     private void extractBeanDefinitions(Set<Class<?>> configClasses) {
         for (Class<?> configClass : configClasses) {
             String configBeanId = configClass.getName();
-            Set<String> configDeps = extractClassDependencies(configClass);
+            Set<Class<?>> configDeps = extractClassDependencies(configClass);
 
             BeanInfo configBean = BeanInfo.builder()
                     .beanId(configBeanId)
                     .producedType(configClass)
                     .configClass(configClass)
                     .method(null)
-                    .dependencies(configDeps)
+                    .dependencyTypes(configDeps)
+                    .dependencies(new HashSet<>())
                     .singleton(true)
                     .aop(false)
                     .build();
@@ -56,18 +57,18 @@ public class BeanDependencyGraphBuilder {
         }
     }
 
-    private Set<String> extractClassDependencies(Class<?> clazz) {
-        Set<String> deps = new HashSet<>();
+    private Set<Class<?>> extractClassDependencies(Class<?> clazz) {
+        Set<Class<?>> deps = new HashSet<>();
 
         for (Field field : ReflectionCache.fields(clazz)) {
             if (field.isAnnotationPresent(Inject.class)) {
-                deps.add(field.getType().getName());
+                deps.add(field.getType());
             }
         }
 
         for (Constructor<?> constructor : ReflectionCache.constructors(clazz)) {
             for (Parameter param : constructor.getParameters()) {
-                deps.add(param.getType().getName());
+                deps.add(param.getType());
             }
         }
 
@@ -83,11 +84,11 @@ public class BeanDependencyGraphBuilder {
             String beanId = configClass.getName() + "." + method.getName();
             Class<?> returnType = extractProcucedType(method);
 
-            Set<String> methodDeps = new HashSet<>();
-            methodDeps.add(configClass.getName());
+            Set<Class<?>> methodDeps = new HashSet<>();
+            methodDeps.add(configClass);
 
             for (Parameter param : method.getParameters()) {
-                methodDeps.add(param.getType().getName());
+                methodDeps.add(param.getType());
             }
 
             BeanInfo beanDef = BeanInfo.builder()
@@ -95,7 +96,8 @@ public class BeanDependencyGraphBuilder {
                     .producedType(returnType)
                     .configClass(configClass)
                     .method(method)
-                    .dependencies(methodDeps)
+                    .dependencyTypes(methodDeps)
+                    .dependencies(new HashSet<>())
                     .singleton(isSingletonBean(method))
                     .aop(isAopEnabled(method))
                     .build();
@@ -135,20 +137,17 @@ public class BeanDependencyGraphBuilder {
             Set<String> resolvedDeps = new HashSet<>();
             boolean hasServiceDependency = false;
 
-            for (String depTypeName : bean.getDependencies()) {
-                try {
-                    Class<?> depType = Class.forName(depTypeName);
-                    String producerBeanId = findBeanProducer(depType);
+            for (Class<?> depType : bean.getDependencyTypes()) {
+                if (depType == null) {
+                    continue;
+                }
 
-                    if (producerBeanId != null) {
-                        resolvedDeps.add(producerBeanId);
-                    } else {
-                        if (isUserService(depType)) {
-                            hasServiceDependency = true;
-                        }
-                    }
-                } catch (ClassNotFoundException e) {
-                    log.warn("Tipo não encontrado: {}", depTypeName);
+                String producerBeanId = findBeanProducer(depType);
+
+                if (producerBeanId != null) {
+                    resolvedDeps.add(producerBeanId);
+                } else if (isUserService(depType)) {
+                    hasServiceDependency = true;
                 }
             }
 

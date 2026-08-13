@@ -25,8 +25,12 @@ import dtm.di.storage.async.AsyncComponentStorage;
 import dtm.di.storage.bean.BeanDependencyGraphBuilder;
 import dtm.di.storage.bean.BeanGraph;
 import dtm.di.storage.composite.CompositeDependencyStorage;
+import dtm.di.storage.external.DependencyRegistrationSlot;
+import dtm.di.storage.external.ExternalComponentRegistration;
+import dtm.di.storage.external.ExternalLoadBatch;
 import dtm.di.storage.lazy.Lazy;
 import dtm.di.storage.lazy.ParamtrizedObject;
+import dtm.di.event.EventListenerRegistration;
 import dtm.discovery.core.ClassFinder;
 import dtm.discovery.core.ClassFinderConfigurations;
 import dtm.discovery.finder.simple.ClassFinderProjectService;
@@ -42,7 +46,9 @@ import java.lang.reflect.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -74,6 +80,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private final Map<Class<?>, List<Method>> externalBeenBefore;
     private final Map<Class<?>, List<Method>> externalBeenAfter;
+
+    private final Map<Class<?>, ExternalComponentRegistration> externalComponentRegistrations;
+    private final ReentrantLock externalLock;
+    private final AtomicLong externalRegistrationSequence;
 
     private final int thresholdConcurent = 50;
 
@@ -144,6 +154,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         this.serviceBeensDefinitionLayer = Collections.synchronizedList(new ArrayList<>());
         this.externalBeenBefore = new LinkedHashMap<>();
         this.externalBeenAfter = new LinkedHashMap<>();
+        this.externalComponentRegistrations = new ConcurrentHashMap<>();
+        this.externalLock = new ReentrantLock();
+        this.externalRegistrationSequence = new AtomicLong();
         this.classFinderConfigurations = getFindConfigurations();
         this.mainClass = mainClass;
         this.profiles = resolveProfiles(profiles);
@@ -222,14 +235,46 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             filterExternalsBeens();
             selfInjection();
             loaded.set(true);
-            registerExternalBeens(externalBeenBefore);
+            registerExternalBeens(externalBeenBefore, null, null);
             registerAppSettingsIfAbsent();
             registerEventPublisher();
             loadBeens();
-            registerExternalBeens(externalBeenAfter);
+            registerExternalBeens(externalBeenAfter, null, null);
             scanEventListeners();
         }catch (Exception e){
            throw new UnloadError("load error", e);
+        }
+    }
+
+    @Override
+    public void loadExternal(Collection<Class<?>> classes) throws InvalidClassRegistrationException {
+        final Set<Class<?>> normalized = normalizeExternalClasses(classes);
+        throwIfUnload();
+
+        if(normalized.isEmpty()) return;
+
+        externalLock.lock();
+        try{
+            throwIfUnload();
+            loadExternalClasses(normalized);
+        }finally {
+            externalLock.unlock();
+        }
+    }
+
+    @Override
+    public void unload(Collection<Class<?>> classes) {
+        final Set<Class<?>> normalized = normalizeExternalClasses(classes);
+        throwIfUnload();
+
+        if(normalized.isEmpty()) return;
+
+        externalLock.lock();
+        try{
+            throwIfUnload();
+            unloadExternalClasses(normalized);
+        }finally {
+            externalLock.unlock();
         }
     }
 
@@ -298,16 +343,40 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     @Override
     public void unload() {
-        invokePreDestroyMethods();
-        loaded.set(false);
-        this.classFinderConfigurations = getFindConfigurations();
-        loadedSystemClasses.clear();
-        serviceBeensDefinition.clear();
-        dependencyContainer.clear();
-        primaryDependencyIndex.clear();
-        foldersToLoad.clear();
-        externalBeenBefore.clear();
-        externalBeenAfter.clear();
+        externalLock.lock();
+        try{
+            List<ExternalComponentRegistration> externals = externalRegistrationsInReverseOrder(
+                    new ArrayList<>(externalComponentRegistrations.values())
+            );
+
+            for(ExternalComponentRegistration registration : externals){
+                registration.deactivate();
+            }
+
+            cancelAsyncTasks(externals);
+            unregisterEventListeners(externals);
+            invokePreDestroyMethods(collectShutdownInstances(externals));
+            clearExternalCaches(externals);
+
+            for(ExternalComponentRegistration registration : externals){
+                registration.clear();
+            }
+
+            externalComponentRegistrations.clear();
+
+            loaded.set(false);
+            this.classFinderConfigurations = getFindConfigurations();
+            loadedSystemClasses.clear();
+            serviceBeensDefinition.clear();
+            serviceBeensDefinitionLayer.clear();
+            dependencyContainer.clear();
+            primaryDependencyIndex.clear();
+            foldersToLoad.clear();
+            externalBeenBefore.clear();
+            externalBeenAfter.clear();
+        }finally {
+            externalLock.unlock();
+        }
     }
 
     /**
@@ -318,6 +387,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
      * (sub-tipo/interface), via Set de identidade.
      */
     private void invokePreDestroyMethods(){
+        invokePreDestroyMethods(collectContainerSingletons());
+    }
+
+    private List<Object> collectContainerSingletons(){
         Set<Object> visited = Collections.newSetFromMap(new IdentityHashMap<>());
         List<Object> singletons = new ArrayList<>();
         for(Map<String, Dependency> map : dependencyContainer.values()){
@@ -337,7 +410,16 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             }
         }
 
-        for(Object instance : singletons){
+        return singletons;
+    }
+
+    private void invokePreDestroyMethods(Collection<?> instances){
+        if(instances == null || instances.isEmpty()) return;
+
+        Set<Object> destroyed = Collections.newSetFromMap(new IdentityHashMap<>());
+
+        for(Object instance : instances){
+            if(instance == null || !destroyed.add(instance)) continue;
             List<Method> destroyMethods = ReflectionCache.methodsWithAnnotation(
                     instance.getClass(), dtm.di.annotations.PreDestroy.class);
             if(destroyMethods.isEmpty()) continue;
@@ -521,13 +603,25 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 return;
             }
 
-            publisher.registerListeners(instance, referenceClass);
+            trackNewInstanceEventListeners(referenceClass, publisher.registerListeners(instance, referenceClass));
         } catch (Exception e) {
             throw new NewInstanceException(
                     "Erro ao registrar @EventListener da instancia " + referenceClass.getName() + ": " + e.getMessage(),
                     referenceClass,
                     e
             );
+        }
+    }
+
+    private void trackNewInstanceEventListeners(Class<?> referenceClass, EventListenerRegistration listenerRegistration) {
+        if (listenerRegistration == null) return;
+
+        ExternalComponentRegistration registration = externalComponentRegistrations.get(referenceClass);
+
+        if (registration == null) return;
+
+        if (!registration.addEventListener(listenerRegistration)) {
+            listenerRegistration.unregister();
         }
     }
 
@@ -643,6 +737,449 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         if(!isLoaded()) throw new UnloadError("unload: DependencyContainer");
     }
 
+    private Set<Class<?>> normalizeExternalClasses(Collection<Class<?>> classes){
+        Objects.requireNonNull(classes, "classes não pode ser null");
+
+        Set<Class<?>> normalized = new LinkedHashSet<>();
+        for(Class<?> clazz : classes){
+            if(clazz == null){
+                throw new IllegalArgumentException("classes não pode conter elementos null");
+            }
+            normalized.add(clazz);
+        }
+
+        return normalized;
+    }
+
+    private void loadExternalClasses(Set<Class<?>> classes) throws InvalidClassRegistrationException{
+        final Set<Class<?>> candidates = new LinkedHashSet<>();
+        for(Class<?> clazz : classes){
+            if(!externalComponentRegistrations.containsKey(clazz)){
+                candidates.add(clazz);
+            }
+        }
+
+        if(candidates.isEmpty()) return;
+
+        final Set<Class<?>> componentClasses = filterExternalClasses(candidates, Component.class);
+        final Set<Class<?>> configurationClasses = filterExternalClasses(candidates, Configuration.class);
+
+        if(componentClasses.isEmpty() && configurationClasses.isEmpty()) return;
+
+        final Set<Class<?>> knownExternalTypes = new LinkedHashSet<>(componentClasses);
+        knownExternalTypes.addAll(externalComponentRegistrations.keySet());
+
+        final ExternalLoadBatch batch = new ExternalLoadBatch(externalRegistrationSequence);
+
+        try{
+            final List<Set<ServiceBean>> layers = buildServiceLayers(componentClasses);
+            final ConfigurationBeans configurationBeans = resolveConfigurationBeans(configurationClasses, componentClasses);
+
+            registerExternalBeens(configurationBeans.before(), batch, knownExternalTypes);
+            loadBeensInlayer(layers, batch, knownExternalTypes);
+            registerExternalBeens(configurationBeans.after(), batch, knownExternalTypes);
+
+            for(Class<?> configurationClass : configurationClasses){
+                externalRegistrationFor(batch, configurationClass, knownExternalTypes);
+            }
+
+            publishExternalBatch(batch);
+        }catch (Throwable error){
+            rollbackExternalBatch(batch);
+
+            if(error instanceof Error errorToPropagate){
+                throw errorToPropagate;
+            }
+
+            throw asExternalRegistrationException(error, candidates);
+        }
+    }
+
+    private void unloadExternalClasses(Set<Class<?>> classes){
+        final List<ExternalComponentRegistration> targets = new ArrayList<>();
+        final Set<Class<?>> owners = new LinkedHashSet<>();
+
+        for(Class<?> clazz : classes){
+            ExternalComponentRegistration registration = externalComponentRegistrations.get(clazz);
+            if(registration != null && owners.add(clazz)){
+                targets.add(registration);
+            }
+        }
+
+        if(targets.isEmpty()) return;
+
+        validateExternalDependents(owners);
+
+        List<ExternalComponentRegistration> ordered = externalRegistrationsInReverseOrder(targets);
+        destroyExternalRegistrations(ordered);
+
+        for(ExternalComponentRegistration registration : ordered){
+            externalComponentRegistrations.remove(registration.getOwnerClass(), registration);
+            registration.clear();
+        }
+    }
+
+    private void validateExternalDependents(Set<Class<?>> owners){
+        Map<Class<?>, Set<Class<?>>> dependents = new LinkedHashMap<>();
+
+        for(ExternalComponentRegistration registration : externalComponentRegistrations.values()){
+            if(owners.contains(registration.getOwnerClass())) continue;
+
+            for(Class<?> dependency : registration.snapshotDependencies()){
+                if(owners.contains(dependency)){
+                    dependents.computeIfAbsent(dependency, ignored -> new LinkedHashSet<>())
+                            .add(registration.getOwnerClass());
+                }
+            }
+        }
+
+        if(!dependents.isEmpty()){
+            throw new ExternalDependencyInUseException(dependents);
+        }
+    }
+
+    private void destroyExternalRegistrations(List<ExternalComponentRegistration> registrations){
+        if(registrations.isEmpty()) return;
+
+        for(ExternalComponentRegistration registration : registrations){
+            registration.deactivate();
+        }
+
+        cancelAsyncTasks(registrations);
+        unregisterEventListeners(registrations);
+
+        List<Object> instances = new ArrayList<>();
+        for(ExternalComponentRegistration registration : registrations){
+            List<Object> registered = registration.snapshotInstances();
+            Collections.reverse(registered);
+            instances.addAll(registered);
+        }
+        invokePreDestroyMethods(instances);
+
+        Set<ClassLoader> loaders = new HashSet<>();
+        for(ExternalComponentRegistration registration : registrations){
+            List<DependencyRegistrationSlot> slots = registration.snapshotSlots();
+            for(int index = slots.size() - 1; index >= 0; index--){
+                removeDependencyRegistration(slots.get(index));
+            }
+
+            for(Map.Entry<Class<?>, Dependency> primary : registration.snapshotPrimaryTypes().entrySet()){
+                primaryDependencyIndex.remove(primary.getKey(), primary.getValue());
+            }
+
+            loaders.addAll(registration.classLoaders());
+        }
+
+        clearExternalCaches(registrations);
+        removeEmptyRegistrations(loaders);
+    }
+
+    private void removeDependencyRegistration(DependencyRegistrationSlot slot){
+        Map<String, Dependency> registrations = dependencyContainer.get(slot.indexedType());
+
+        if(registrations == null){
+            return;
+        }
+
+        registrations.remove(slot.qualifier(), slot.dependency());
+
+        if(registrations.isEmpty()){
+            dependencyContainer.remove(slot.indexedType(), registrations);
+        }
+
+        primaryDependencyIndex.remove(slot.indexedType(), slot.dependency());
+    }
+
+    private void removeEmptyRegistrations(Set<ClassLoader> loaders){
+        if(loaders.isEmpty()) return;
+
+        final ClassLoader containerLoader = getClass().getClassLoader();
+
+        for(Map.Entry<Class<?>, Map<String, Dependency>> entry : dependencyContainer.entrySet()){
+            ClassLoader loader = entry.getKey().getClassLoader();
+
+            if(loader == null || loader == containerLoader || !loaders.contains(loader)) continue;
+
+            Map<String, Dependency> registrations = entry.getValue();
+            if(registrations != null && registrations.isEmpty()){
+                dependencyContainer.remove(entry.getKey(), registrations);
+            }
+        }
+    }
+
+    private void cancelAsyncTasks(List<ExternalComponentRegistration> registrations){
+        for(ExternalComponentRegistration registration : registrations){
+            for(CompletableFuture<?> task : registration.snapshotAsyncTasks()){
+                try{
+                    task.cancel(true);
+                }catch (Exception e){
+                    log.error("Falha ao cancelar tarefa assíncrona de {}: {}",
+                            registration.getOwnerClass().getName(), e.getMessage(), e);
+                }
+            }
+        }
+    }
+
+    private void unregisterEventListeners(List<ExternalComponentRegistration> registrations){
+        for(ExternalComponentRegistration registration : registrations){
+            for(EventListenerRegistration listener : registration.snapshotEventListeners()){
+                try{
+                    listener.unregister();
+                }catch (Exception e){
+                    log.error("Falha ao remover listener de {}: {}",
+                            registration.getOwnerClass().getName(), e.getMessage(), e);
+                }
+            }
+        }
+    }
+
+    private void clearExternalCaches(List<ExternalComponentRegistration> registrations){
+        for(ExternalComponentRegistration registration : registrations){
+            ProxyFactory.clearCache(registration.snapshotProxyCacheClasses());
+            ReflectionCache.clear(registration.snapshotReflectionCacheClasses());
+        }
+    }
+
+    private List<Object> collectShutdownInstances(List<ExternalComponentRegistration> registrations){
+        List<Object> instances = new ArrayList<>();
+
+        for(ExternalComponentRegistration registration : registrations){
+            List<Object> registered = registration.snapshotInstances();
+            Collections.reverse(registered);
+            instances.addAll(registered);
+        }
+
+        instances.addAll(collectContainerSingletons());
+
+        return instances;
+    }
+
+    private List<ExternalComponentRegistration> externalRegistrationsInReverseOrder(List<ExternalComponentRegistration> registrations){
+        List<ExternalComponentRegistration> ordered = new ArrayList<>(registrations);
+        ordered.sort(Comparator.comparingLong(ExternalComponentRegistration::getSequence).reversed());
+        return ordered;
+    }
+
+    private void publishExternalBatch(ExternalLoadBatch batch){
+        for(ExternalComponentRegistration registration : batch.inCreationOrder()){
+            externalComponentRegistrations.put(registration.getOwnerClass(), registration);
+        }
+    }
+
+    private void rollbackExternalBatch(ExternalLoadBatch batch){
+        List<ExternalComponentRegistration> registrations = batch.inReverseCreationOrder();
+
+        if(registrations.isEmpty()) return;
+
+        try{
+            destroyExternalRegistrations(registrations);
+        }catch (Exception e){
+            log.error("Falha ao desfazer o carregamento externo: {}", e.getMessage(), e);
+        }
+
+        for(ExternalComponentRegistration registration : registrations){
+            registration.clear();
+        }
+    }
+
+    private InvalidClassRegistrationException asExternalRegistrationException(Throwable error, Set<Class<?>> candidates){
+        Throwable current = error;
+        int depth = 0;
+
+        while (current != null && depth++ < 5) {
+            if(current instanceof InvalidClassRegistrationException invalidClassRegistrationException){
+                return invalidClassRegistrationException;
+            }
+            current = current.getCause();
+        }
+
+        Class<?> reference = candidates.isEmpty() ? null : candidates.iterator().next();
+
+        return new InvalidClassRegistrationException(
+                "Erro ao carregar componentes externos ==> causa: " + error.getMessage(),
+                reference,
+                error
+        );
+    }
+
+    private Set<Class<?>> filterExternalClasses(Set<Class<?>> candidates, Class<? extends Annotation> annotation){
+        Set<Class<?>> filtered = new LinkedHashSet<>();
+
+        for(Class<?> clazz : candidates){
+            if(!isConcreteClass(clazz)) continue;
+            if(!hasMetaAnnotation(clazz, annotation)) continue;
+            if(!isProfileActive(clazz)) continue;
+            filtered.add(clazz);
+        }
+
+        return filtered;
+    }
+
+    private ExternalComponentRegistration externalRegistrationFor(
+            ExternalLoadBatch batch,
+            Class<?> ownerClass,
+            Set<Class<?>> knownExternalTypes
+    ){
+        if(batch == null) return null;
+
+        ExternalComponentRegistration registration = batch.registrationFor(ownerClass);
+        registration.addDependencies(resolveExternalDependencies(ownerClass, knownExternalTypes));
+
+        return registration;
+    }
+
+    private Set<Class<?>> resolveExternalDependencies(Class<?> clazz, Set<Class<?>> knownExternalTypes){
+        if(knownExternalTypes == null || knownExternalTypes.isEmpty()) return Set.of();
+
+        Set<Class<?>> dependencies = new LinkedHashSet<>();
+
+        for(Class<?> dependency : getDependecyClassListOfClass(clazz, knownExternalTypes)){
+            if(knownExternalTypes.contains(dependency)){
+                dependencies.add(dependency);
+            }
+        }
+
+        return dependencies;
+    }
+
+    private Set<Class<?>> resolveExternalMethodDependencies(List<Method> methods, Set<Class<?>> knownExternalTypes){
+        if(knownExternalTypes == null || knownExternalTypes.isEmpty()) return Set.of();
+
+        Set<Class<?>> dependencies = new LinkedHashSet<>();
+
+        for(Method method : methods){
+            for(Parameter parameter : method.getParameters()){
+                Class<?> type = parameter.getType();
+
+                if(knownExternalTypes.contains(type)){
+                    dependencies.add(type);
+                    continue;
+                }
+
+                if(type.isInterface() || Modifier.isAbstract(type.getModifiers())){
+                    for(Class<?> candidate : knownExternalTypes){
+                        if(type.isAssignableFrom(candidate)){
+                            dependencies.add(candidate);
+                        }
+                    }
+                }
+            }
+        }
+
+        return dependencies;
+    }
+
+    private void trackExternalSlot(
+            ExternalComponentRegistration registration,
+            Class<?> indexedType,
+            String qualifier,
+            Dependency dependency
+    ){
+        if(registration == null) return;
+        registration.addSlot(new DependencyRegistrationSlot(indexedType, qualifier, dependency));
+    }
+
+    private void trackExternalType(ExternalComponentRegistration registration, Class<?> clazz){
+        if(registration == null || clazz == null) return;
+
+        Class<?> current = clazz;
+        while (current != null && current != Object.class) {
+            registration.addReflectionCacheClass(current);
+            current = current.getSuperclass();
+        }
+    }
+
+    private void trackExternalInstance(
+            ExternalComponentRegistration registration,
+            Class<?> componentClass,
+            Object instance,
+            boolean aop
+    ){
+        if(registration == null) return;
+
+        trackExternalType(registration, componentClass);
+
+        if(aop){
+            registration.addProxyCacheClass(componentClass);
+        }
+
+        if(instance == null) return;
+
+        registration.addSingletonInstance(instance);
+        trackExternalType(registration, instance.getClass());
+        registerExternalEventListeners(registration, componentClass, instance);
+    }
+
+    private void trackExternalConfigurationInstance(
+            ExternalComponentRegistration registration,
+            Class<?> configurationClass,
+            Object instance
+    ){
+        if(registration == null || instance == null) return;
+
+        trackExternalType(registration, configurationClass);
+        trackExternalType(registration, instance.getClass());
+        registration.addSingletonInstance(instance);
+    }
+
+    private void trackExternalAsyncTask(
+            ExternalComponentRegistration registration,
+            Class<?> componentClass,
+            boolean aop,
+            CompletableFuture<?> task
+    ){
+        if(registration == null) return;
+
+        registration.addAsyncTask(task);
+        trackExternalType(registration, componentClass);
+
+        if(aop){
+            registration.addProxyCacheClass(componentClass);
+        }
+
+        task.whenComplete((instance, error) -> {
+            if(error != null || instance == null || !registration.isActive()) return;
+
+            registration.addSingletonInstance(instance);
+            trackExternalType(registration, instance.getClass());
+            registerExternalEventListeners(registration, componentClass, instance);
+        });
+    }
+
+    private void registerExternalEventListeners(
+            ExternalComponentRegistration registration,
+            Class<?> componentClass,
+            Object instance
+    ){
+        if(registration == null || instance == null) return;
+        if(!hasEventListenerMethods(componentClass)) return;
+
+        DefaultEventPublisher publisher = getDefaultEventPublisher();
+
+        if(publisher == null){
+            log.warn(
+                    "Componente externo {} nao teve seus @EventListener registrados: DefaultEventPublisher nao encontrado",
+                    componentClass.getName()
+            );
+            return;
+        }
+
+        EventListenerRegistration listenerRegistration = publisher.registerListeners(instance, componentClass);
+
+        if(!registration.addEventListener(listenerRegistration)){
+            listenerRegistration.unregister();
+        }
+    }
+
+    private boolean hasEventListenerMethods(Class<?> componentClass){
+        if(componentClass == null) return false;
+
+        return !ReflectionCache.methodsWithAnnotation(
+                componentClass,
+                dtm.di.annotations.event.EventListener.class
+        ).isEmpty();
+    }
+
     private void loadBeens() throws InvalidClassRegistrationException{
         if(processInlayer){
             loadBeensInlayer();
@@ -653,16 +1190,35 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private void loadBeensInlayer() throws InvalidClassRegistrationException{
         for (Set<ServiceBean> layer : serviceBeensDefinitionLayer) {
-            loadBeensInlayer(layer);
+            loadBeensInlayer(layer, null, null);
         }
     }
 
-    private void loadBeensInlayer(Set<ServiceBean> layer) throws InvalidClassRegistrationException{
+    private void loadBeensInlayer(
+            List<Set<ServiceBean>> layers,
+            ExternalLoadBatch batch,
+            Set<Class<?>> knownExternalTypes
+    ) throws InvalidClassRegistrationException{
+        for (Set<ServiceBean> layer : layers) {
+            loadBeensInlayer(layer, batch, knownExternalTypes);
+        }
+    }
+
+    private void loadBeensInlayer(
+            Set<ServiceBean> layer,
+            ExternalLoadBatch batch,
+            Set<Class<?>> knownExternalTypes
+    ) throws InvalidClassRegistrationException{
         List<CompletableFuture<?>> tasks = new ArrayList<>();
         for (ServiceBean serviceBean : layer) {
+            final ExternalComponentRegistration registration = externalRegistrationFor(
+                    batch,
+                    serviceBean.getClazz(),
+                    knownExternalTypes
+            );
             CompletableFuture<?> task = CompletableFuture.runAsync(() -> {
                 try {
-                    loadBeen(serviceBean, new HashSet<>(), getQualifierName(serviceBean.getClazz()));
+                    loadBeen(serviceBean, new HashSet<>(), getQualifierName(serviceBean.getClazz()), registration);
                 } catch (InvalidClassRegistrationException e) {
                     throw new RuntimeException(e);
                 }
@@ -693,20 +1249,30 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private void loadBeensTopological() throws InvalidClassRegistrationException{
         for (ServiceBean service: serviceBeensDefinition){
-            loadBeen(service, new HashSet<>(), getQualifierName(service.getClazz()));
+            loadBeen(service, new HashSet<>(), getQualifierName(service.getClazz()), null);
         }
     }
 
-    private void loadBeen(ServiceBean been, final Set<Class<?>> registeringClasses, String qualifier) throws InvalidClassRegistrationException{
+    private void loadBeen(
+            ServiceBean been,
+            final Set<Class<?>> registeringClasses,
+            String qualifier,
+            ExternalComponentRegistration registration
+    ) throws InvalidClassRegistrationException{
         if(!isProfileActive(been.getClazz())) return;
         if(hasMetaAnnotation(been.getClazz(), Async.class)){
-            loadAsyncBeen(been, registeringClasses, qualifier);
+            loadAsyncBeen(been, registeringClasses, qualifier, registration);
         }else{
-            loadDefaultBeen(been, registeringClasses, qualifier);
+            loadDefaultBeen(been, registeringClasses, qualifier, registration);
         }
     }
 
-    private void loadDefaultBeen(ServiceBean been, final Set<Class<?>> registeringClasses, String qualifier) throws InvalidClassRegistrationException{
+    private void loadDefaultBeen(
+            ServiceBean been,
+            final Set<Class<?>> registeringClasses,
+            String qualifier,
+            ExternalComponentRegistration registration
+    ) throws InvalidClassRegistrationException{
         final Class<?> dependency = been.getClazz();
 
         try {
@@ -715,8 +1281,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(dependency, qualifier, childrenRegistration);
 
             boolean singleton = isSingleton(dependency);
-
-
+            Object singletonInstance = singleton ? createObject(dependency, been.isAop()) : null;
 
             DependencyObject dependencyObject = singleton
                    ? DependencyObject.builder()
@@ -724,7 +1289,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                             .qualifier(qualifier)
                             .singleton(true)
                             .creatorFunction(null)
-                            .singletonInstance(createObject(dependency, been.isAop()))
+                            .singletonInstance(singletonInstance)
                         .build()
                    : DependencyObject.builder()
                             .dependencyClass(dependency)
@@ -739,8 +1304,11 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     mapOfDependency,
                     dependency,
                     dependencyObject,
-                    qualifier
+                    qualifier,
+                    registration
             );
+
+            trackExternalInstance(registration, dependency, singletonInstance, been.isAop());
         }catch (Exception e) {
             log.error("Falha ao registrar a dependência: {}", dependency.getName(), e);
             throw new InvalidClassRegistrationException(
@@ -751,7 +1319,12 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
     }
 
-    private void loadAsyncBeen(ServiceBean been, final Set<Class<?>> registeringClasses, String qualifier) throws InvalidClassRegistrationException{
+    private void loadAsyncBeen(
+            ServiceBean been,
+            final Set<Class<?>> registeringClasses,
+            String qualifier,
+            ExternalComponentRegistration registration
+    ) throws InvalidClassRegistrationException{
         final Class<?> dependency = been.getClazz();
 
         try {
@@ -774,6 +1347,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 return shouldApplyAop ? proxyObject(instance, instance.getClass()) : instance;
             }, mainExecutor);
 
+            trackExternalAsyncTask(registration, dependency, been.isAop(), resolveComponentAsync);
+
             Supplier<?> activatorFunction = () -> new AsyncComponentStorage<>(dependency, qualifier, resolveComponentAsync);
 
             DependencyObject dependencyObject = new DependencyObject(dependency, qualifier, false, activatorFunction, activatorFunction);
@@ -782,7 +1357,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     mapOfDependency,
                     dependency,
                     dependencyObject,
-                    qualifier
+                    qualifier,
+                    registration
             );
         }catch (Exception e) {
             log.error("Falha ao registrar a dependência: {}", dependency.getName(), e);
@@ -813,7 +1389,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         int order = 0;
         for(Class<?> subClass : listOfRegistration){
             if(!dependencyContainer.containsKey(subClass) && isProfileActive(subClass)){
-                loadBeen(new ServiceBean(subClass, order++, isAopEnabled(clazz)), registeringClasses, getQualifierName(subClass));
+                loadBeen(new ServiceBean(subClass, order++, isAopEnabled(clazz)), registeringClasses, getQualifierName(subClass), null);
             }
         }
     }
@@ -839,31 +1415,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         final Set<Class<?>> serviceLoadedClassActive = getConcreteServiceLoadedClass(Component.class);
         serviceLoadedClassActive.addAll(getConcreteServiceLoadedClass(Aspect.class));
 
-        final int total = serviceLoadedClassActive.size();
-
-        final Map<Class<?>, Set<Class<?>>> dependencyGraph = new ConcurrentHashMap<>();
-
-        if (total < thresholdConcurent) {
-            processDependencyServiceWithParallelStream(dependencyGraph, serviceLoadedClassActive);
-        } else {
-            processDependencyServiceWithExecutorService(dependencyGraph, serviceLoadedClassActive);
-        }
+        final Map<Class<?>, Set<Class<?>>> dependencyGraph = buildDependencyGraph(serviceLoadedClassActive);
 
         if(processInlayer){
-            List<Set<Class<?>>> classLayers = groupByDependencyLayer(serviceLoadedClassActive, dependencyGraph);
-
-            int order = 0;
-            for (Set<Class<?>> classSet : classLayers) {
-                int layerOrder = order;
-                Set<ServiceBean> layer = ConcurrentHashMap.newKeySet();
-
-                classSet.parallelStream().forEach(clazz -> {
-                    layer.add(new ServiceBean(clazz, layerOrder, isAopEnabled(clazz)));
-                });
-
-                serviceBeensDefinitionLayer.add(layer);
-                order++;
-            }
+            serviceBeensDefinitionLayer.addAll(buildServiceLayers(serviceLoadedClassActive, dependencyGraph));
         }else{
             Set<Class<?>> ordered = TopologicalSorter.sort(serviceLoadedClassActive, dependencyGraph);
             int order = 0;
@@ -871,6 +1426,47 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 serviceBeensDefinition.add(new ServiceBean(clazz, order++, isAopEnabled(clazz)));
             }
         }
+    }
+
+    private Map<Class<?>, Set<Class<?>>> buildDependencyGraph(Set<Class<?>> serviceClasses){
+        final Map<Class<?>, Set<Class<?>>> dependencyGraph = new ConcurrentHashMap<>();
+
+        if(serviceClasses.isEmpty()) return dependencyGraph;
+
+        if (serviceClasses.size() < thresholdConcurent) {
+            processDependencyServiceWithParallelStream(dependencyGraph, serviceClasses);
+        } else {
+            processDependencyServiceWithExecutorService(dependencyGraph, serviceClasses);
+        }
+
+        return dependencyGraph;
+    }
+
+    private List<Set<ServiceBean>> buildServiceLayers(Set<Class<?>> serviceClasses){
+        return buildServiceLayers(serviceClasses, buildDependencyGraph(serviceClasses));
+    }
+
+    private List<Set<ServiceBean>> buildServiceLayers(Set<Class<?>> serviceClasses, Map<Class<?>, Set<Class<?>>> dependencyGraph){
+        List<Set<ServiceBean>> layers = new ArrayList<>();
+
+        if(serviceClasses.isEmpty()) return layers;
+
+        List<Set<Class<?>>> classLayers = groupByDependencyLayer(serviceClasses, dependencyGraph);
+
+        int order = 0;
+        for (Set<Class<?>> classSet : classLayers) {
+            int layerOrder = order;
+            Set<ServiceBean> layer = ConcurrentHashMap.newKeySet();
+
+            classSet.parallelStream().forEach(clazz -> {
+                layer.add(new ServiceBean(clazz, layerOrder, isAopEnabled(clazz)));
+            });
+
+            layers.add(layer);
+            order++;
+        }
+
+        return layers;
     }
 
     private void loadByPluginFolder(){
@@ -1082,19 +1678,32 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         if (configClasses.isEmpty()) {
             return;
         }
+
         Set<Class<?>> serviceClasses = getConcreteServiceLoadedClass(Component.class, false);
-        BeanDependencyGraphBuilder builder = new BeanDependencyGraphBuilder(serviceClasses);
-        BeanGraph beanGraph = builder.buildGraph(configClasses);
-
-        Map<Class<?>, List<Method>> beforeBeans = beanGraph.getBeforeServiceBeans(serviceClasses);
-
-        Map<Class<?>, List<Method>> afterBeans = beanGraph.getAfterServiceBeans(serviceClasses);
+        ConfigurationBeans configurationBeans = resolveConfigurationBeans(configClasses, serviceClasses);
 
         this.externalBeenBefore.clear();
-        this.externalBeenBefore.putAll(beforeBeans);
+        this.externalBeenBefore.putAll(configurationBeans.before());
 
         this.externalBeenAfter.clear();
-        this.externalBeenAfter.putAll(afterBeans);
+        this.externalBeenAfter.putAll(configurationBeans.after());
+    }
+
+    private ConfigurationBeans resolveConfigurationBeans(Set<Class<?>> configurationClasses, Set<Class<?>> serviceClasses){
+        if(configurationClasses.isEmpty()) return ConfigurationBeans.empty();
+
+        BeanGraph beanGraph = new BeanDependencyGraphBuilder(serviceClasses).buildGraph(configurationClasses);
+
+        return new ConfigurationBeans(
+                beanGraph.getBeforeServiceBeans(serviceClasses),
+                beanGraph.getAfterServiceBeans(serviceClasses)
+        );
+    }
+
+    private record ConfigurationBeans(Map<Class<?>, List<Method>> before, Map<Class<?>, List<Method>> after){
+        private static ConfigurationBeans empty(){
+            return new ConfigurationBeans(Map.of(), Map.of());
+        }
     }
 
 
@@ -1103,21 +1712,35 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         registerObject(this);
     }
 
-    private void registerExternalBeens(Map<Class<?>, List<Method>> configurationsClasses) throws InvalidClassRegistrationException{
+    private void registerExternalBeens(
+            Map<Class<?>, List<Method>> configurationsClasses,
+            ExternalLoadBatch batch,
+            Set<Class<?>> knownExternalTypes
+    ) throws InvalidClassRegistrationException{
         for(Map.Entry<Class<?>, List<Method>> configurationsClass : configurationsClasses.entrySet()){
             final Class<?> clazz = configurationsClass.getKey();
             List<Method> methodsList = configurationsClass.getValue();
 
             if(!methodsList.isEmpty()){
-                registerExternalBeen(clazz, methodsList, true);
+                ExternalComponentRegistration registration = externalRegistrationFor(batch, clazz, knownExternalTypes);
+                if(registration != null){
+                    registration.addDependencies(resolveExternalMethodDependencies(methodsList, knownExternalTypes));
+                }
+                registerExternalBeen(clazz, methodsList, true, registration);
             }
         }
     }
 
 
-    private void registerExternalBeen(Class<?> configurationsClass, List<Method> methodsList, boolean load) throws InvalidClassRegistrationException{
+    private void registerExternalBeen(
+            Class<?> configurationsClass,
+            List<Method> methodsList,
+            boolean load,
+            ExternalComponentRegistration registration
+    ) throws InvalidClassRegistrationException{
         try {
             Object configurationInstance = newInstance(configurationsClass, false);
+            trackExternalConfigurationInstance(registration, configurationsClass, configurationInstance);
             for (Method method : methodsList) {
                 Parameter[] parameters = method.getParameters();
                 Object[] args = new Object[parameters.length];
@@ -1149,29 +1772,33 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                         if(singleton){
 
                             if(result instanceof AsyncRegistrationFunction<?> asyncRegistrationFunction){
-                                registerObjectFunction(asyncRegistrationFunction, isAopEnabled(method));
+                                registerObjectFunction(asyncRegistrationFunction, isAopEnabled(method), registration);
                             }else if(result instanceof RegistrationFunction<?> registrationFunction){
-                                registerObjectFunction(registrationFunction, isAopEnabled(method));
+                                registerObjectFunction(registrationFunction, isAopEnabled(method), registration);
                             }else{
                                 boolean aop = (isAopEnabled(method) && isAopEnabled(result.getClass()));
-                                registerObject(result, qualifier, aop);
+                                registerObject(result, qualifier, aop, registration);
                             }
 
                         }else {
-                            registerExternalBeenNoSinglenton(result, method, qualifier);
+                            registerExternalBeenNoSinglenton(result, method, qualifier, registration);
                         }
                     }
                 };
 
                 if(method.isAnnotationPresent(Async.class)){
-                    CompletableFuture.runAsync(() -> {
+                    CompletableFuture<Void> asyncRegistration = CompletableFuture.runAsync(() -> {
                         try{
                             action.run();
                         } catch (Throwable e) {
                             throw new RuntimeException(e);
                         }
                     }, mainExecutor);
-                    return;
+
+                    if(registration == null) return;
+
+                    registration.addAsyncTask(asyncRegistration);
+                    continue;
                 }
 
                 action.run();
@@ -1564,7 +2191,12 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         return null;
     }
 
-    private void registerExternalBeenNoSinglenton(@NonNull Object instance, Method method, String qualifier) throws InvalidClassRegistrationException{
+    private void registerExternalBeenNoSinglenton(
+            @NonNull Object instance,
+            Method method,
+            String qualifier,
+            ExternalComponentRegistration registration
+    ) throws InvalidClassRegistrationException{
         Class<?> beenClass = instance.getClass();
 
         try{
@@ -1578,7 +2210,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             }
             ServiceBean serviceBean = new ServiceBean(beenClass, 0, isAopEnabled(instance.getClass()));
 
-            loadBeen(serviceBean, new HashSet<>(), qualifier);
+            loadBeen(serviceBean, new HashSet<>(), qualifier, registration);
         }catch (NoSuchMethodException e) {
             throw new InvalidClassRegistrationException(
                     "Bean externo não-singleton (" + beenClass.getName() + ") deve possuir um construtor vazio.",
@@ -1621,6 +2253,15 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private void registerObject(@NonNull Object dependency, @NonNull String qualifier, boolean aop) throws InvalidClassRegistrationException {
+        registerObject(dependency, qualifier, aop, null);
+    }
+
+    private void registerObject(
+            @NonNull Object dependency,
+            @NonNull String qualifier,
+            boolean aop,
+            ExternalComponentRegistration registration
+    ) throws InvalidClassRegistrationException {
         try {
             final Class<?> clazz = dependency.getClass();
             if(!isProfileActive(clazz)) return;
@@ -1632,8 +2273,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     mapOfDependency,
                     clazz,
                     dependencyObject,
-                    qualifier
+                    qualifier,
+                    registration
             );
+            trackExternalInstance(registration, clazz, toRegistrate, aop);
         }catch (Exception e) {
             throw new InvalidClassRegistrationException(
                     "Erro ao criar a dependencia: " + dependency.getClass()+ " ==> causa: "+e.getMessage(),
@@ -1644,6 +2287,14 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private void registerObjectFunction(@NonNull RegistrationFunction<?> registrationFunction, Boolean isAop){
+        registerObjectFunction(registrationFunction, isAop, null);
+    }
+
+    private void registerObjectFunction(
+            @NonNull RegistrationFunction<?> registrationFunction,
+            Boolean isAop,
+            ExternalComponentRegistration registration
+    ){
         final Class<?> referenceClass = registrationFunction.getReferenceClass();
         final String qualifier = (registrationFunction.getQualifier().isEmpty()) ? "default" : registrationFunction.getQualifier();
         if(!isProfileActive(referenceClass)) return;
@@ -1667,8 +2318,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     mapOfDependency,
                     referenceClass,
                     dependencyObject,
-                    qualifier
+                    qualifier,
+                    registration
             );
+            trackExternalType(registration, referenceClass);
         }catch (Exception e) {
             throw new InvalidClassRegistrationException(
                     "Erro ao criar a dependencia: " + referenceClass+ " ==> causa: "+e.getMessage(),
@@ -1679,6 +2332,14 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private void registerObjectFunction(@NonNull AsyncRegistrationFunction<?> asyncRegistrationFunction, Boolean isAop){
+        registerObjectFunction(asyncRegistrationFunction, isAop, null);
+    }
+
+    private void registerObjectFunction(
+            @NonNull AsyncRegistrationFunction<?> asyncRegistrationFunction,
+            Boolean isAop,
+            ExternalComponentRegistration registration
+    ){
         final Class<?> referenceClass = asyncRegistrationFunction.getReferenceClass();
         final String qualifier = (asyncRegistrationFunction.getQualifier().isEmpty()) ? "default" : asyncRegistrationFunction.getQualifier();
         final ExecutorService executorService = (asyncRegistrationFunction.getExecutor() != null) ? asyncRegistrationFunction.getExecutor() : mainExecutor;
@@ -1694,6 +2355,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
                 return shouldApplyAop ? proxyObject(instance, instance.getClass()) : instance;
             }, executorService);
+
+            trackExternalAsyncTask(registration, referenceClass, Boolean.TRUE.equals(isAop), resolveComponentAsync);
+
             Supplier<?> activatorFunction = () -> {
               return new AsyncComponentStorage<>(referenceClass, qualifier, resolveComponentAsync);
             };
@@ -1709,7 +2373,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     AsyncComponent.class,
                     dependencyObject,
                     qualifier,
-                    false
+                    false,
+                    registration
             );
         }catch (Exception e) {
             throw new InvalidClassRegistrationException(
@@ -1727,7 +2392,17 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             @NonNull DependencyObject dependencyObject ,
             @NonNull String qualifier
     ) throws InvalidClassRegistrationException {
-        registerInContainer(listOfDependency, classToRegister, dependencyObject, qualifier, true);
+        registerInContainer(listOfDependency, classToRegister, dependencyObject, qualifier, true, null);
+    }
+
+    private void registerInContainer(
+            @NonNull final Map<String, Dependency> listOfDependency,
+            @NonNull Class<?> classToRegister,
+            @NonNull DependencyObject dependencyObject ,
+            @NonNull String qualifier,
+            ExternalComponentRegistration registration
+    ) throws InvalidClassRegistrationException {
+        registerInContainer(listOfDependency, classToRegister, dependencyObject, qualifier, true, registration);
     }
 
     private void registerInContainer(
@@ -1737,13 +2412,30 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             @NonNull String qualifier,
             boolean registerSubTypes
     ) throws InvalidClassRegistrationException {
-        indexPrimary(classToRegister, dependencyObject, qualifier);
-        listOfDependency.put(qualifier, dependencyObject);
-        dependencyContainer.put(classToRegister, listOfDependency);
-        if(registerSubTypes)registerSubTypes(classToRegister, listOfDependency);
+        registerInContainer(listOfDependency, classToRegister, dependencyObject, qualifier, registerSubTypes, null);
     }
 
-    private void indexPrimary(Class<?> classToRegister, Dependency dependencyObject, String qualifier) throws InvalidClassRegistrationException {
+    private void registerInContainer(
+            @NonNull final Map<String, Dependency> listOfDependency,
+            @NonNull Class<?> classToRegister,
+            @NonNull DependencyObject dependencyObject ,
+            @NonNull String qualifier,
+            boolean registerSubTypes,
+            ExternalComponentRegistration registration
+    ) throws InvalidClassRegistrationException {
+        indexPrimary(classToRegister, dependencyObject, qualifier, registration);
+        listOfDependency.put(qualifier, dependencyObject);
+        dependencyContainer.put(classToRegister, listOfDependency);
+        trackExternalSlot(registration, classToRegister, qualifier, dependencyObject);
+        if(registerSubTypes)registerSubTypes(classToRegister, dependencyObject, qualifier, registration);
+    }
+
+    private void indexPrimary(
+            Class<?> classToRegister,
+            Dependency dependencyObject,
+            String qualifier,
+            ExternalComponentRegistration registration
+    ) throws InvalidClassRegistrationException {
         if(!isPrimaryDependency(dependencyObject, qualifier)) return;
 
         Set<Class<?>> types = new LinkedHashSet<>();
@@ -1760,6 +2452,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                         "Mais de um bean @Primary foi registrado para " + type.getName() + ". Mantenha apenas um bean principal para esse tipo.",
                         dependencyObject.getDependencyClass()
                 );
+            }
+            if(registration != null && existing == null){
+                registration.addPrimaryType(type, dependencyObject);
             }
         }
     }
@@ -1792,7 +2487,12 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         return mapOfDependency;
     }
 
-    private void registerSubTypes(@NonNull Class<?> clazz, @NonNull Map<String, Dependency> listOfDependency){
+    private void registerSubTypes(
+            @NonNull Class<?> clazz,
+            @NonNull DependencyObject dependencyObject,
+            @NonNull String qualifier,
+            ExternalComponentRegistration registration
+    ){
         if (clazz.equals(Object.class) || clazz.isInterface()) {
             return;
         }
@@ -1805,15 +2505,37 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 !superClass.isInterface() &&
                 !clazz.isAnnotationPresent(ExcludeRootRegistration.class)
         ) {
-            dependencyContainer.put(superClass, listOfDependency);
+            registerAlias(superClass, dependencyObject, qualifier, registration);
         }
 
         for(Class<?> interfaceObj : interfaces){
             if (!interfaceObj.equals(Object.class)) {
-                dependencyContainer.put(interfaceObj, listOfDependency);
+                registerAlias(interfaceObj, dependencyObject, qualifier, registration);
             }
         }
 
+    }
+
+    private void registerAlias(
+            @NonNull Class<?> indexedType,
+            @NonNull DependencyObject dependencyObject,
+            @NonNull String qualifier,
+            ExternalComponentRegistration registration
+    ){
+        Map<String, Dependency> registrations = dependencyContainer.computeIfAbsent(
+                indexedType,
+                ignored -> new ConcurrentHashMap<>()
+        );
+
+        if(registration == null){
+            registrations.put(qualifier, dependencyObject);
+            return;
+        }
+
+        Dependency previous = registrations.putIfAbsent(qualifier, dependencyObject);
+        if(previous == null){
+            trackExternalSlot(registration, indexedType, qualifier, dependencyObject);
+        }
     }
 
     private Object proxyObject(Object realInstance, Class<?> clazz){
