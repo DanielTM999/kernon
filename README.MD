@@ -896,6 +896,62 @@ public class SettingsConfig {
 }
 ```
 
+## Registrar settings externos
+
+A implementação padrão também é registrada como `AppSettingsRegistry`. O registry
+permite incorporar JSON em runtime sem substituir a API de leitura existente:
+
+```java
+import dtm.di.annotations.Inject;
+import dtm.di.settings.AppSettingsRegistry;
+import dtm.di.settings.SettingsRegistrationMode;
+
+public class PluginLoader {
+
+    @Inject
+    private AppSettingsRegistry settingsRegistry;
+
+    public void configure(ClassLoader pluginClassLoader) {
+        // Sem modo explícito, KEEP é utilizado.
+        settingsRegistry.register("{\"feature\": {\"enabled\": true}}");
+
+        // Lê settings.json e settings.<profile>.json do classloader informado.
+        settingsRegistry.register(pluginClassLoader, SettingsRegistrationMode.OVERRIDE);
+    }
+}
+```
+
+Também estão disponíveis overloads para `Path` e `Class<?>`. `String` e `Path`
+representam um único documento; somente `Class` e `ClassLoader` procuram os arquivos
+dos profiles ativos. O merge é recursivo por propriedade: `KEEP` conserva valores
+existentes e `OVERRIDE` os substitui.
+
+O settings principal controla o registry:
+
+```json
+{
+  "settingsRegistry": {
+    "enabled": true,
+    "allowedModes": ["KEEP", "OVERRIDE"],
+    "failOnPolicyOverride": true
+  }
+}
+```
+
+- `enabled: false` bloqueia todos os registros.
+- `allowedModes` ausente, vazio ou com tipo incorreto usa somente `KEEP`, sem warning.
+- Um nome de modo desconhecido gera warning e também aplica o fallback `[KEEP]`.
+- Com `failOnPolicyOverride: true`, uma fonte externa que contenha `settingsRegistry`
+  é rejeitada integralmente. Com `false`, somente essa propriedade é descartada
+  silenciosamente e as demais são registradas.
+- A política é calculada após os profiles principais e não pode ser alterada por
+  registros externos.
+- JSON explícito inválido, arquivo ilegível ou `settings.json` externo ausente lança
+  `SettingsRegistrationException` sem modificar o estado anterior.
+
+O registro não atualiza campos `@Value` que já foram injetados. Leituras programáticas
+e injeções realizadas depois do registro observam os novos valores.
+
 
 # Configurações 
 - O framework utiliza a anotação `@Configuration` para configrar os gerenciamentos
