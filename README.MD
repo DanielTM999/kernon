@@ -975,6 +975,7 @@ import dtm.di.annotations.aop.BeforeExecution;
 import dtm.di.annotations.aop.Pointcut;
 import dtm.di.storage.containers.DependencyContainerStorage;
 import dtm.di.core.DependencyContainer;
+import dtm.di.core.InjectionStrategy;
 
 public class Main {
 
@@ -988,12 +989,12 @@ public class Main {
   private MainService3 mainService3;
 
   public Main(MainService1 mainService) {
-    this.mainService = mainService;
+    this.mainService1 = mainService;
   }
 
   public static void main(String[] args) {
-    DependencyContainer dependencyContainer = DependencyContainerStorage.getInstance(Main.clas);
-    dependencyContainer.enableParallelInjection();
+    DependencyContainer dependencyContainer = DependencyContainerStorage.getInstance(Main.class);
+    dependencyContainer.setInjectionStrategy(InjectionStrategy.PARALLEL);
     dependencyContainer.enableAOP();
     dependencyContainer.load();
 
@@ -1062,3 +1063,69 @@ public class Main {
 
 }
 ```
+
+### Estratégia de injeção (`InjectionStrategy`)
+
+#### Configuração programática
+
+Para controlar como os campos anotados com `@Inject` e `@Value` são processados, use
+`setInjectionStrategy(InjectionStrategy strategy)`:
+
+```java
+DependencyContainer dependencyContainer = DependencyContainerStorage.getInstance(Main.class);
+dependencyContainer.setInjectionStrategy(InjectionStrategy.ADAPTIVE);
+dependencyContainer.load();
+```
+
+#### Configuração declarativa
+
+A estratégia também pode ser definida no `settings.json`:
+
+```json
+{
+  "dependencyContainer": {
+    "injectionStrategy": "PARALLEL"
+  }
+}
+```
+
+Os arquivos de profile, como `settings.dev.json`, podem sobrescrever esse valor seguindo
+as mesmas regras dos demais settings. O nome da estratégia não diferencia maiúsculas de
+minúsculas.
+
+O contêiner também considera uma implementação de `AppSettings` fornecida por um bean de
+`@Configuration`:
+
+```java
+@Configuration
+public class SettingsConfiguration {
+
+  @BeanDefinition
+  @Service
+  @DisableAop
+  public AppSettings appSettings() {
+    return new JsonAppSettings("config/myapp.json");
+  }
+}
+```
+
+Esse bean deve ser criado antes dos serviços e, portanto, não deve depender de um serviço
+gerenciado pelo contêiner. A estratégia é lida dele antes da criação e da injeção dos
+demais componentes.
+
+As estratégias disponíveis são:
+
+- `ADAPTIVE`: estratégia padrão. Executa sequencialmente quando há até 10 campos para
+  injetar e em paralelo quando há mais de 10.
+- `PARALLEL`: força a injeção paralela, independentemente da quantidade de campos.
+- `SEQUENTIAL`: força a injeção sequencial, o que pode ser útil para reduzir o custo de
+  concorrência ou facilitar a depuração.
+
+A ordem de precedência é:
+
+1. A chamada programática a `setInjectionStrategy(...)` antes de `load()`.
+2. A propriedade `dependencyContainer.injectionStrategy` dos settings.
+3. `ADAPTIVE`, quando nenhuma configuração válida for informada.
+
+Uma chamada programática com `null` seleciona `ADAPTIVE` e também tem precedência sobre
+o valor declarativo. Um valor declarativo desconhecido gera um warning e usa `ADAPTIVE`.

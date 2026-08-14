@@ -61,10 +61,14 @@ import static dtm.di.common.AnnotationsUtils.getAllFieldWithAnnotation;
 @SuppressWarnings("unchecked")
 public class DependencyContainerStorage implements DependencyContainer, ClassFinderDependencyContainer {
 
+    private static final String INJECTION_STRATEGY_PROPERTY = "dependencyContainer.injectionStrategy";
+
     private final ExecutorService mainExecutor;
     private final ExecutorService mainVirtualExecutor;
 
     private final AtomicReference<InjectionStrategy> injectionStrategy;
+    private final AtomicBoolean injectionStrategyConfiguredProgrammatically;
+    private final Object injectionStrategyConfigurationLock;
 
     private final Map<Class<?>, Map<String, Dependency>> dependencyContainer;
     private final Map<Class<?>, Dependency> primaryDependencyIndex;
@@ -148,6 +152,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         this.classFinder = new ClassFinderProjectService();
         this.childrenRegistration = false;
         this.injectionStrategy = new AtomicReference<>(InjectionStrategy.ADAPTIVE);
+        this.injectionStrategyConfiguredProgrammatically = new AtomicBoolean(false);
+        this.injectionStrategyConfigurationLock = new Object();
         this.foldersToLoad = new ArrayList<>();
         this.serviceBeensDefinition = Collections.synchronizedList(new ArrayList<>());
         this.loadedSystemClasses = ConcurrentHashMap.newKeySet();
@@ -237,6 +243,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             loaded.set(true);
             registerExternalBeens(externalBeenBefore, null, null);
             registerAppSettingsIfAbsent();
+            applyDeclarativeInjectionStrategy();
             registerEventPublisher();
             loadBeens();
             registerExternalBeens(externalBeenAfter, null, null);
@@ -482,7 +489,49 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     @Override
     public void setInjectionStrategy(InjectionStrategy injectionStrategy) {
-        this.injectionStrategy.set(injectionStrategy != null ? injectionStrategy : InjectionStrategy.ADAPTIVE);
+        synchronized (injectionStrategyConfigurationLock){
+            this.injectionStrategyConfiguredProgrammatically.set(true);
+            this.injectionStrategy.set(injectionStrategy != null ? injectionStrategy : InjectionStrategy.ADAPTIVE);
+        }
+    }
+
+    private void applyDeclarativeInjectionStrategy() {
+        if(injectionStrategyConfiguredProgrammatically.get()) return;
+
+        AppSettings settings = resolveAppSettings();
+        if(settings == null){
+            settings = new JsonAppSettings(
+                    JsonAppSettings.DEFAULT_RESOURCE_NAME,
+                    profiles.toArray(String[]::new)
+            );
+        }
+
+        if(!settings.has(INJECTION_STRATEGY_PROPERTY)) return;
+
+        String configuredStrategy = settings.getString(INJECTION_STRATEGY_PROPERTY, "");
+        String normalizedStrategy = configuredStrategy == null
+                ? ""
+                : configuredStrategy.trim().toUpperCase(Locale.ROOT);
+        InjectionStrategy declarativeStrategy;
+        boolean invalidStrategy = false;
+        try{
+            declarativeStrategy = InjectionStrategy.valueOf(normalizedStrategy);
+        }catch (IllegalArgumentException e){
+            declarativeStrategy = InjectionStrategy.ADAPTIVE;
+            invalidStrategy = true;
+        }
+
+        synchronized (injectionStrategyConfigurationLock){
+            if(injectionStrategyConfiguredProgrammatically.get()) return;
+            this.injectionStrategy.set(declarativeStrategy);
+            if(invalidStrategy){
+                log.warn(
+                        "Estratégia de injeção desconhecida '{}' em '{}'. Usando ADAPTIVE.",
+                        configuredStrategy,
+                        INJECTION_STRATEGY_PROPERTY
+                );
+            }
+        }
     }
 
     @Override

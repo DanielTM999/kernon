@@ -1,5 +1,6 @@
 package dtm.di.testsupport;
 
+import dtm.di.core.InjectionStrategy;
 import dtm.di.exceptions.InvalidClassRegistrationException;
 import dtm.di.prototypes.Dependency;
 import dtm.di.storage.StaticContainer;
@@ -8,6 +9,7 @@ import dtm.di.storage.containers.DependencyContainerStorage;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class ContainerFixture {
 
@@ -45,6 +47,13 @@ public final class ContainerFixture {
     @SuppressWarnings("unchecked")
     public static Map<Class<?>, ?> externalRegistrationsOf(DependencyContainerStorage container) {
         return (Map<Class<?>, ?>) readField(container, "externalComponentRegistrations");
+    }
+
+    @SuppressWarnings("unchecked")
+    public static InjectionStrategy injectionStrategyOf(DependencyContainerStorage container) {
+        AtomicReference<InjectionStrategy> strategy =
+                (AtomicReference<InjectionStrategy>) readField(container, "injectionStrategy");
+        return strategy.get();
     }
 
     public static boolean isReflectionCached(Class<?> clazz) {

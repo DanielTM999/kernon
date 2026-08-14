@@ -42,9 +42,11 @@ public interface DependencyContainerConfigurator {
      * A estratégia controla como o contêiner executa o processo de injeção:
      * - Dependendo do modo selecionado, a injeção pode ser executada de forma
      *   paralela, sequencial ou adaptativa conforme o volume de dependências.
+     * - A configuração programática tem precedência sobre a propriedade
+     *   {@code dependencyContainer.injectionStrategy} dos settings.
      *
      * @param strategy A estratégia de injeção a ser utilizada pelo contêiner.
-     *                 Não deve ser {@code null}.
+     *                 {@code null} seleciona {@link InjectionStrategy#ADAPTIVE}.
      */
     void setInjectionStrategy(InjectionStrategy strategy);
 
