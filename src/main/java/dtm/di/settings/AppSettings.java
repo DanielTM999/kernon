@@ -7,8 +7,9 @@ import java.lang.reflect.Type;
  * Acesso programático às configurações do {@code settings.json} — análogo ao
  * {@code IConfiguration} do C# / {@code Environment} do Spring.
  *
- * <p>O arquivo é lido <b>somente do classpath</b> ({@code src/main/resources/settings.json}
- * empacotado no JAR). É <b>read-only</b> em runtime.</p>
+ * <p>Por padrão, o arquivo é lido do classpath ({@code src/main/resources/settings.json}
+ * empacotado no JAR). A implementação padrão também oferece registro incremental de
+ * fontes externas por meio de {@link AppSettingsRegistry}.</p>
  *
  * <p>Chaves usam notação de ponto para navegar em estruturas aninhadas.
  * Exemplo, dado o JSON:</p>
