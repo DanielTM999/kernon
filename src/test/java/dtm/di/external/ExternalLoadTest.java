@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CompletionException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -160,6 +161,28 @@ class ExternalLoadTest {
     }
 
     @Test
+    @DisplayName("mais de um @Primary para o mesmo tipo falha e reverte o lote")
+    void duplicatePrimaryFailsAndRollsBackBatch() throws Exception {
+        List<Class<?>> classes = module.load(
+                ExternalFixtures.PRIMARY_REPORTER,
+                ExternalFixtures.SECOND_PRIMARY_REPORTER
+        );
+        Class<?> reporter = module.load(ExternalFixtures.REPORTER);
+
+        InvalidClassRegistrationException error = assertThrows(
+                InvalidClassRegistrationException.class,
+                () -> container.loadExternal(classes)
+        );
+
+        assertTrue(error.getMessage().contains("@Primary"));
+        assertFalse(ContainerFixture.primaryIndexOf(container).containsKey(reporter));
+        assertTrue(ContainerFixture.externalRegistrationsOf(container).isEmpty());
+        for (Class<?> primary : classes) {
+            assertFalse(container.hasDependecy(primary));
+        }
+    }
+
+    @Test
     @DisplayName("9. componente externo com @Profile ativo é registrado")
     void activeProfileIsRegistered() throws Exception {
         Class<?> active = module.load(ExternalFixtures.ACTIVE_PROFILE_SERVICE);
@@ -189,6 +212,55 @@ class ExternalLoadTest {
         assertNotNull(configBean);
         assertEquals("from-config", ContainerFixture.invoke(configBean, "value"));
         assertEquals(1, Probe.count("ExternalConfiguration.configBean"));
+    }
+
+    @Test
+    @DisplayName("@Profile em método produtor filtra o bean antes da execução")
+    void profileOnProducerMethodFiltersBean() throws Exception {
+        Class<?> configuration = module.load(ExternalFixtures.PROFILED_PRODUCER_CONFIGURATION);
+        container.loadExternal(List.of(configuration));
+
+        Class<?> activeType = module.load(ExternalFixtures.CONFIG_BEAN);
+        Class<?> inactiveType = module.load(ExternalFixtures.ORPHAN_BEAN);
+
+        assertEquals("profile-test", ContainerFixture.invoke(container.getDependency(activeType), "value"));
+        assertFalse(container.hasDependecy(inactiveType));
+        assertEquals(1, Probe.count("ProfiledProducer.active"));
+        assertEquals(0, Probe.count("ProfiledProducer.inactive"));
+    }
+
+    @Test
+    @DisplayName("produtor @Async registra wrapper sem bloquear produtores posteriores")
+    void asyncProducerRegistersWrapperWithoutBlocking() throws Exception {
+        Class<?> configuration = module.load(ExternalFixtures.ASYNC_PRODUCER_CONFIGURATION);
+        container.loadExternal(List.of(configuration));
+
+        Class<?> asyncType = module.load(ExternalFixtures.CONFIG_BEAN);
+        Class<?> dependentType = module.load(ExternalFixtures.COMPONENT_AWARE_BEAN);
+        Object dependent = container.getDependency(dependentType);
+        Object asyncBean = container.getDependencyAsync(asyncType, "default", true).getAsync().await();
+
+        assertEquals("async-wrapper", ContainerFixture.invoke(dependent, "value"));
+        assertEquals("async", ContainerFixture.invoke(asyncBean, "value"));
+        assertTrue(Probe.events().stream().anyMatch(event -> event.startsWith("AsyncProducer.thread:MainExecutor-Worker-")));
+        assertEquals(1, Probe.count("AsyncProducer.dependent"));
+    }
+
+    @Test
+    @DisplayName("falha de produtor @Async fica no resultado e não reverte carga concluída")
+    void asyncProducerFailureCompletesResultExceptionally() throws Exception {
+        Class<?> configuration = module.load(ExternalFixtures.FAILING_ASYNC_PRODUCER_CONFIGURATION);
+        Class<?> orphanType = module.load(ExternalFixtures.ORPHAN_BEAN);
+        Class<?> asyncType = module.load(ExternalFixtures.CONFIG_BEAN);
+
+        container.loadExternal(List.of(configuration));
+
+        assertThrows(
+                CompletionException.class,
+                () -> container.getDependencyAsync(asyncType, "default", true).getAsync().await()
+        );
+        assertTrue(container.hasDependecy(orphanType));
+        assertFalse(ContainerFixture.externalRegistrationsOf(container).isEmpty());
     }
 
     @Test

@@ -147,6 +147,26 @@ public final class AnnotationsUtils {
         return null;
     }
 
+    /**
+     * Obtém uma anotação presente diretamente ou como meta-anotação em um método.
+     */
+    public static <A extends Annotation> A getMetaAnnotation(Method targetMethod, Class<A> baseAnnotation){
+        Objects.requireNonNull(targetMethod, "targetMethod não pode ser null");
+        Objects.requireNonNull(baseAnnotation, "baseAnnotation não pode ser null");
+
+        if(targetMethod.isAnnotationPresent(baseAnnotation)){
+            return targetMethod.getAnnotation(baseAnnotation);
+        }
+        Set<Class<? extends Annotation>> visiting = new HashSet<>();
+        for(Annotation annotation : targetMethod.getAnnotations()){
+            A found = findMetaAnnotation(annotation.annotationType(), baseAnnotation, visiting);
+            if(found != null){
+                return found;
+            }
+        }
+        return null;
+    }
+
 
 
 

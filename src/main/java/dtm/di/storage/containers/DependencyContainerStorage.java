@@ -362,7 +362,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
             cancelAsyncTasks(externals);
             unregisterEventListeners(externals);
-            invokePreDestroyMethods(collectShutdownInstances(externals));
+            List<Object> shutdownInstances = collectShutdownInstances(externals);
+            shutdownInstances.addAll(collectContainerSingletons());
+            invokePreDestroyMethods(shutdownInstances);
             clearExternalCaches(externals);
 
             for(ExternalComponentRegistration registration : externals){
@@ -431,7 +433,13 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     instance.getClass(), dtm.di.annotations.PreDestroy.class);
             if(destroyMethods.isEmpty()) continue;
 
-            List<Method> ordered = new ArrayList<>(destroyMethods);
+            Map<String, Method> methodsBySignature = new LinkedHashMap<>();
+            for(Method method : destroyMethods){
+                String signature = method.getName() + Arrays.toString(method.getParameterTypes());
+                methodsBySignature.putIfAbsent(signature, method);
+            }
+
+            List<Method> ordered = new ArrayList<>(methodsBySignature.values());
             ordered.sort(Comparator.<Method>comparingInt(m -> m.getAnnotation(dtm.di.annotations.PreDestroy.class).order()).reversed());
 
             for(Method method : ordered){
@@ -731,7 +739,14 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         if(qualifier == null || qualifier.isEmpty()) return false;
         try{
             final Map<String, Dependency> listOfDependency = getDependencyMap(referenceClass);
-            return listOfDependency.containsKey(qualifier);
+            if(listOfDependency.containsKey(qualifier)){
+                return true;
+            }
+            if(AsyncComponent.class.equals(referenceClass)){
+                return listOfDependency.values().stream()
+                        .anyMatch(dependency -> qualifier.equals(dependency.getQualifier()));
+            }
+            return false;
         }catch (Exception ignored){
             return false;
         }
@@ -1741,7 +1756,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private ConfigurationBeans resolveConfigurationBeans(Set<Class<?>> configurationClasses, Set<Class<?>> serviceClasses){
         if(configurationClasses.isEmpty()) return ConfigurationBeans.empty();
 
-        BeanGraph beanGraph = new BeanDependencyGraphBuilder(serviceClasses).buildGraph(configurationClasses);
+        BeanGraph beanGraph = new BeanDependencyGraphBuilder(serviceClasses, this::isProfileActive)
+                .buildGraph(configurationClasses);
 
         return new ConfigurationBeans(
                 beanGraph.getBeforeServiceBeans(serviceClasses),
@@ -1797,6 +1813,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 if(load){
                     for(int i = 0; i < parameters.length; i++){
                         final Parameter parameter = parameters[i];
+                        validateAsyncProducerDependency(parameter, method);
                         try{
                             args[i] = getDependecyObjectByParam(parameter, configurationInstance, method.isAnnotationPresent(DisableInjectionWarn.class));
                         }catch (Exception e){
@@ -1810,6 +1827,11 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
                 if(!method.canAccess(configurationInstance)){
                     method.setAccessible(true);
+                }
+
+                if(method.isAnnotationPresent(Async.class)){
+                    registerAsyncProducer(configurationInstance, method, args, registration);
+                    continue;
                 }
 
                 ThrowableAction action = () -> {
@@ -1835,26 +1857,112 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     }
                 };
 
-                if(method.isAnnotationPresent(Async.class)){
-                    CompletableFuture<Void> asyncRegistration = CompletableFuture.runAsync(() -> {
-                        try{
-                            action.run();
-                        } catch (Throwable e) {
-                            throw new RuntimeException(e);
-                        }
-                    }, mainExecutor);
-
-                    if(registration == null) return;
-
-                    registration.addAsyncTask(asyncRegistration);
-                    continue;
-                }
-
                 action.run();
             }
         } catch (Throwable e) {
             throw new InvalidClassRegistrationException("Erro ao configurar: "+configurationsClass, configurationsClass, e);
         }
+    }
+
+    private void registerAsyncProducer(
+            Object configurationInstance,
+            Method method,
+            Object[] args,
+            ExternalComponentRegistration registration
+    ){
+        Class<?> referenceClass = method.getReturnType();
+        if(referenceClass.equals(Void.TYPE)
+                || RegistrationFunction.class.isAssignableFrom(referenceClass)){
+            throw new InvalidClassRegistrationException(
+                    "Produtor @Async deve retornar diretamente o tipo do bean: " + method,
+                    method.getDeclaringClass()
+            );
+        }
+        if(method.isAnnotationPresent(BeanDefinition.class)
+                && !isSingletonBeen(method)){
+            throw new InvalidClassRegistrationException(
+                    "Produtor @Async não suporta @BeanDefinition(INSTANCE): " + method,
+                    method.getDeclaringClass()
+            );
+        }
+        if(method.isAnnotationPresent(Primary.class)){
+            throw new InvalidClassRegistrationException(
+                    "Produtor @Async não suporta @Primary; selecione AsyncComponent<T> por tipo e qualifier: " + method,
+                    method.getDeclaringClass()
+            );
+        }
+
+        String qualifier = getQualifierName(method);
+        AsyncRegistrationFunction<Object> asyncProducer = new AsyncRegistrationFunction<>() {
+            @Override
+            public ExecutorService getExecutor() {
+                return mainExecutor;
+            }
+
+            @Override
+            public Supplier<Object> getFunction() {
+                return () -> {
+                    try{
+                        Object result = method.invoke(configurationInstance, args);
+                        if(result == null){
+                            throw new InvalidClassRegistrationException(
+                                    "Produtor @Async retornou null: " + method,
+                                    referenceClass
+                            );
+                        }
+
+                        return result;
+                    }catch (InvocationTargetException e){
+                        Throwable cause = (e.getCause() != null) ? e.getCause() : e;
+                        throw new CompletionException(cause);
+                    }catch (Exception e){
+                        throw new CompletionException(e);
+                    }
+                };
+            }
+
+            @Override
+            public Class<Object> getReferenceClass() {
+                return (Class<Object>) referenceClass;
+            }
+
+            @Override
+            public String getQualifier() {
+                return qualifier;
+            }
+        };
+
+        registerObjectFunction(asyncProducer, isAopEnabled(method), registration);
+    }
+
+    private void validateAsyncProducerDependency(Parameter parameter, Method consumer){
+        if(AsyncComponent.class.equals(parameter.getType())){
+            return;
+        }
+
+        String qualifier = getQualifierName(parameter);
+        Map<String, Dependency> synchronous = dependencyContainer.get(parameter.getType());
+        boolean hasSynchronousDependency = resolveWithPrimary(parameter.getType(), synchronous, qualifier) != null;
+        if(!hasSynchronousDependency && hasAsyncComponentRegistration(parameter.getType(), qualifier)){
+            throw new InvalidClassRegistrationException(
+                    "O produtor '" + consumer.getName() + "' depende diretamente de "
+                            + parameter.getType().getName() + ", criado por um produtor @Async. "
+                            + "Receba AsyncComponent<" + parameter.getType().getSimpleName() + ">.",
+                    consumer.getDeclaringClass()
+            );
+        }
+    }
+
+    private boolean hasAsyncComponentRegistration(Class<?> referenceClass, String qualifier){
+        Map<String, Dependency> registrations = dependencyContainer.get(AsyncComponent.class);
+        if(registrations == null || registrations.isEmpty()){
+            return false;
+        }
+
+        return registrations.values().stream().anyMatch(dependency ->
+                referenceClass.equals(dependency.getDependencyClass())
+                        && qualifier.equals(dependency.getQualifier())
+        );
     }
 
     private Object createObject(@NonNull Class<?> clazz){
@@ -2097,7 +2205,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             final Dependency dependencyObject = listOfDependency
                     .values()
                     .stream()
-                    .filter(d -> (d.getQualifier().equals(qualifier)))
+                    .filter(d -> d.getQualifier().equals(qualifier))
+                    .filter(d -> reference.equals(d.getDependencyClass()))
                     .findFirst()
                     .orElseThrow(() -> {
                 return new DependencyInjectionException("Erro ao obter dependência: reference="+reference+", qualifier="+qualifier);
@@ -2237,6 +2346,12 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
         Dependency direct = map.get(qualifier);
         if(direct != null) return direct;
+        if(AsyncComponent.class.equals(reference)){
+            List<Dependency> matches = map.values().stream()
+                    .filter(dependency -> qualifier.equals(dependency.getQualifier()))
+                    .toList();
+            return (matches.size() == 1) ? matches.getFirst() : null;
+        }
         return null;
     }
 
@@ -2395,13 +2510,14 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         if(!isProfileActive(referenceClass)) return;
         try{
             CompletableFuture<?> resolveComponentAsync = CompletableFuture.supplyAsync(() -> {
-                boolean shouldApplyAop = (isAop != null) ? isAop : isAopEnabled(referenceClass);
+                boolean shouldApplyAop = ((isAop != null) ? isAop : isAopEnabled(referenceClass));
                 Object instance = asyncRegistrationFunction.getFunction().get();
 
                 if (instance == null) {
                     throw new InvalidClassRegistrationException("Instância inválida para " + referenceClass, referenceClass);
                 }
 
+                shouldApplyAop = shouldApplyAop && isAopEnabled(instance.getClass());
                 return shouldApplyAop ? proxyObject(instance, instance.getClass()) : instance;
             }, executorService);
 
@@ -2411,8 +2527,14 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
               return new AsyncComponentStorage<>(referenceClass, qualifier, resolveComponentAsync);
             };
 
-            final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(AsyncComponent.class, qualifier, referenceClass);
-            if(mapOfDependency.values().stream().anyMatch(d -> d.getDependencyClass().equals(referenceClass))){
+            String registrationKey = asyncRegistrationKey(referenceClass, qualifier);
+            final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(
+                    AsyncComponent.class,
+                    registrationKey,
+                    referenceClass
+            );
+            if(mapOfDependency.values().stream().anyMatch(d ->
+                    d.getDependencyClass().equals(referenceClass) && d.getQualifier().equals(qualifier))){
                 return;
             }
             DependencyObject dependencyObject = new DependencyObject(referenceClass, qualifier, false, activatorFunction, activatorFunction);
@@ -2421,7 +2543,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                     mapOfDependency,
                     AsyncComponent.class,
                     dependencyObject,
-                    qualifier,
+                    registrationKey,
                     false,
                     registration
             );
@@ -2518,6 +2640,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         return dependencyContainer.computeIfAbsent(referenceClass, k -> new ConcurrentHashMap<>());
     }
 
+    private String asyncRegistrationKey(Class<?> referenceClass, String qualifier){
+        return qualifier + "|" + referenceClass.getName();
+    }
+
     private Map<String, Dependency> getDependencyMapAndValidDependency(Class<?> referenceClass, @NonNull String qualifier){
         return getDependencyMapAndValidDependency(referenceClass, qualifier, referenceClass);
     }
@@ -2527,7 +2653,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private Map<String, Dependency> getDependencyMapAndValidDependency(Class<?> referenceClass, @NonNull String qualifier, Class<?> validClass){
-        return getDependencyMapAndValidDependency(referenceClass, qualifier, referenceClass, true);
+        return getDependencyMapAndValidDependency(referenceClass, qualifier, validClass, true);
     }
 
     private Map<String, Dependency> getDependencyMapAndValidDependency(Class<?> referenceClass, @NonNull String qualifier, Class<?> validClass, boolean registerAutoInject){
@@ -2664,6 +2790,17 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private boolean isProfileActive(Class<?> clazz){
         Profile profile = AnnotationsUtils.getMetaAnnotation(clazz, Profile.class);
+
+        return isProfileActive(profile);
+    }
+
+    private boolean isProfileActive(Method method){
+        Profile profile = AnnotationsUtils.getMetaAnnotation(method, Profile.class);
+
+        return isProfileActive(profile);
+    }
+
+    private boolean isProfileActive(Profile profile){
 
         if (profile != null) {
             List<String> selectedProfiles = normalizeProfiles(profile.value());

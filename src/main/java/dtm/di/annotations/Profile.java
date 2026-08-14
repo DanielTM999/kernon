@@ -9,7 +9,9 @@ import java.lang.annotation.Target;
  * Indica que o componente ou método pertence a um perfil específico de configuração.
  *
  * Pode ser usado para ativar ou desativar componentes conforme o perfil ativo na aplicação,
- * facilitando a customização e modularização do comportamento.
+ * facilitando a customização e modularização do comportamento. Em método produtor de uma
+ * {@link Configuration}, o método inativo é excluído antes da montagem do grafo, não é
+ * invocado e não registra um bean.
  *
  */
 @Retention(RetentionPolicy.RUNTIME)

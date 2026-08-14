@@ -1,1131 +1,231 @@
-# Kernon - Guia de Uso
+# Kernon
 
-## Visão Geral
-O `Kernon` é um sistema de gerenciadmento podendo ser auto gerenciado para aplicações Java que oferece:
-- Injeção de dependência automática
-- Hooks de ciclo de vida
-- Configuração simplificada
-- Suporte a AOP (Aspect-Oriented Programming)
-- Conjunto de classes que integram Injetor de dependecias com suporte a AOP e um boot de aplicação simplificado
+Kernon é um framework Java 21 para aplicações que precisam de:
 
+- descoberta e injeção de dependências;
+- boot gerenciado com hooks de ciclo de vida;
+- AOP opcional;
+- execução assíncrona, eventos e tarefas agendadas;
+- settings JSON com profiles;
+- carga e descarga de componentes externos em runtime.
 
-## Visão Geral Arquitetural
+Ele é indicado para aplicações Java pequenas ou modulares que aceitam descoberta por
+classpath e anotações próprias do framework. Não é um servidor HTTP, ORM, sistema de
+mensageria ou substituto completo para frameworks de aplicação maiores.
 
-O `ManagedApplicationStartup` é um sistema modular que combina três componentes essenciais:
+Este repositório declara as coordenadas Maven `dtm.di:kernon:1.2.0` e exige Java 21.
+A publicação do artefato em um repositório Maven público não está documentada atualmente.
 
-### 1. `ApplicationBoot` - Inicializador Gerenciado
-- **Função Principal**: Orquestração do ciclo de vida da aplicação
-- **Responsabilidades**:
-    - Sequenciamento de inicialização
-    - Gestão de hooks (@LifecycleHook)
-    - Disparo de eventos de ciclo de vida
+## Documentação
 
+- [Comportamento do framework](docs/FRAMEWORK_BEHAVIOR.md): boot, container, resolução,
+  concorrência, erros, settings e shutdown.
+- [Referência de anotações](docs/ANNOTATIONS.md): defaults, dependências, combinações e
+  restrições confirmadas.
+- [Controle de package scan](docs/PackageScanIgnoreReadMe.md): defaults e limitação atual.
+- [Limites e lacunas conhecidas](docs/KNOWN_LIMITATIONS.md): comportamentos nos quais o
+  usuário não deve confiar.
 
-### 2. `DependencyContainer` - Injetor Independente
-- **Função Principal**:
-    - Pode ser usado em conjunto com `ApplicationBoot` ou isoladamente
-    - Acesso direto em qualquer fase
+Leia ao menos a referência de comportamento antes de usar Kernon em um processo que
+precise de ordem de inicialização ou tratamento de falhas previsíveis.
 
+## Exemplo mínimo
 
-### 3. `AOP Integrado` - Opcional
-- **Caracteristica**:
-    - Acoplamento com DI
-    - Desativado por padrão no container
-    - Ativado por padrão pelo `ApplicationBoot`
-    - Desligável via @DisableAop no `ApplicationBoot`
-    - Desligável via função disableAOP() pelo comteiner
+### 1. Ponto de entrada
 
-### 4. `Agendador de Tarefas` - (@Schedule) opicional
-- **Função Principal**: 
-  - Permite a execução automática de métodos em intervalos de tempo definidos
-- **Caracteristica**:
-  - Execução assíncrona e independente do restante do ciclo de vida da aplicação
-  - Desativado por padrão — deve ser explicitamente habilitado com @EnableSchedule
-  - Utiliza Pool de Threads interno para controle de concorrência
-  - Pode ser ativado com configuração de número de threads personalizável
-
-
-![Diagrama de Arquitetura](/docs/imgs/arquitetura_managed_app.png)
-
-
-# Configuração Básica
-
-## AutoGerenciado
-
-### 1. Classe Principal
-Anote sua classe principal(a com o main(String[] args)) com `@ApplicationBoot`:
-
-## Sintaxe Básica
+`@ApplicationBoot` exige uma classe em `value`. Essa classe é o **bootable**: é nela que
+Kernon procura `@OnBoot`, hooks e opções de boot.
 
 ```java
-import dtm.di.application.startup.ManagedApplication;
+package com.example;
+
 import dtm.di.annotations.boot.ApplicationBoot;
-
-@ApplicationBoot(MyApp.class)
-public class MyApp {
-  public static void main(String[] args) {
-    boolean log = true;
-    ManagedApplication.doRun(log, args); // true para habilitar logs
-  }
-}
-```
-
-### Uso de Classe Bootable Externa com @ApplicationBoot
-
-
-### Classe Principal com Boot externo
-O `@ApplicationBoot` permite especificar uma classe externa para centralizar toda a configuração de inicialização da aplicação, separando-a da classe principal.
-
-## Sintaxe Básica
-
-```java
-import dtm.di.application.startup.ManagedApplication;
-import dtm.di.annotations.boot.ApplicationBoot;
-
-@ApplicationBoot(AppBootConfig.class)  // Classe de configuração externa
-public class MainApplication {
-  public static void main(String[] args) {
-    ManagedApplication.doRun(true, args);
-  }
-}
-```
-
-## Benefícios da Classe Bootable Externa
-
-### Separação de Conceitos
-- **Classe principal limpa**: Remove a complexidade de configuração da classe com método `main`
-- **Centralização**: Toda configuração fica em um local dedicado
-
-### Reusabilidade
-- **Compartilhamento entre projetos**: mutiplas inicializações
-
-```java
-import dtm.di.annotations.boot.ApplicationBoot;
-
-// Projeto A
-@ApplicationBoot(SharedBootConfig.class)
-
-// Projeto B
-@ApplicationBoot(SharedBootConfig.class)
-
-//Apenas uma
-public class Main{}
-```
-
-# Importando Módulos e Configurações Externas (`@Import`)
-
-`@Import` informa explicitamente ao container quais classes também devem entrar
-na análise durante o boot. Ao encontrar a anotação, o Kernon adiciona cada
-classe indicada à fila de varredura e continua analisando os seus próprios
-`@Import`s. Assim, ele permite compor módulos de forma explícita — inclusive
-quando eles vêm de outro JAR ou estão fora do pacote base da aplicação.
-
-Isso é especialmente importante em projetos externos e bibliotecas: a
-aplicação consumidora não precisa ampliar o package scan, nem conhecer cada
-`@Service` interno do módulo. Ela importa apenas a classe pública de
-configuração que o módulo expõe.
-
-```java
-import dtm.di.annotations.Configuration;
-import dtm.di.annotations.Import;
-import com.acme.audit.AuditModuleConfig; // classe disponível em outra dependência/JAR
-import com.acme.payment.PaymentModuleConfig;
-
-@Configuration
-@Import({AuditModuleConfig.class, PaymentModuleConfig.class})
-public class AppBootConfig {
-}
-```
-
-No JAR externo, a configuração pode por sua vez declarar beans, importar
-outros módulos ou servir como ponto de entrada para os componentes daquela
-biblioteca:
-
-```java
-package com.acme.audit;
-
-import dtm.di.annotations.BeanDefinition;
-import dtm.di.annotations.Configuration;
-import dtm.di.annotations.Import;
-
-@Configuration
-@Import(AuditPersistenceConfig.class)
-public class AuditModuleConfig {
-
-    @BeanDefinition
-    public AuditClient auditClient() {
-        return new AuditClient();
-    }
-}
-```
-
-### O que o `@Import` faz — e o que ele não faz
-
-- Carrega as classes indicadas para que sejam processadas pelo DI, mesmo fora
-  do escopo normal de descoberta.
-- Suporta importações transitivas: `AppBootConfig` importa `AuditModuleConfig`,
-  que pode importar `AuditPersistenceConfig`.
-- É indicado para classes de configuração (`@Configuration`), aspectos e
-  módulos reutilizáveis. O próprio `@EnableAsync` usa esse mecanismo para
-  registrar o `AsyncAspect`.
-- Não cria um bean automaticamente só por citar uma classe. A classe importada
-  ainda deve expor uma definição reconhecida pelo Kernon, por exemplo
-  `@Configuration` com `@BeanDefinition`, `@Component` ou `@Service`.
-- Evite ciclos de importação, como `A → B → A`; organize um módulo raiz para
-  manter a composição clara.
-
-> Para bibliotecas, prefira publicar uma única classe `...ModuleConfig` como
-> API de integração. Isso reduz o acoplamento da aplicação cliente aos pacotes
-> internos e mantém o boot previsível.
-
-# Anotações de Ciclo de Vida: `@OnBoot` e `@LifecycleHook`
-
-##  `@OnBoot` - Ponto Principal de Inicialização
-
-### Características:
-- **Único por classe** (se declarado múltiplos, apenas 1 executa)
-- **Ordem**: Executado após o carregamento do container DI
-- **Requisitos**:
-```java
-  @OnBoot
-  public static void método() {  
-      // Deve ser:
-      // static
-      // public 
-      // void
-      // sem parâmetros
-  }
-```
-
-##  `@LifecycleHook` - Controle Fino do Ciclo de Vida
-
-### Eventos Disponíveis e Seus Momentos Exatos
-
-| Evento                  | Fase de Execução                | Contexto Disponível                          | Uso Típico                          |
-|-------------------------|---------------------------------|---------------------------------------------|-------------------------------------|
-| `BEFORE_ALL`            | **Primeira etapa** do boot      | Container DI ainda não inicializado         | - Configurar variáveis de ambiente<br>- Validar requisitos do sistema |
-| `AFTER_CONTAINER_LOAD`  | Após **DI completo** mas antes do `@OnBoot` | Container DI pronto, mas app não iniciado | - Validar dependências injetadas<br>- Configurar proxies dinâmicos |
-| `AFTER_STARTUP_METHOD`  | Imediatamente após `@OnBoot`    | App inicializado mas antes de serviços rodando | - Health checks iniciais<br>- Registrar métricas |
-| `AFTER_ALL`             | **Última etapa** do processo    | Todos serviços ativos                       | - Liberar recursos temporários<br>- Registrar fim do boot |
-
-### Exemplo Prático com Todos Eventos
-
-```java
-import dtm.di.annotations.boot.ApplicationBoot;
-import dtm.di.annotations.boot.LifecycleHook;
-
-public class AppLifecycle {
-
-    @LifecycleHook(LifecycleHook.Event.BEFORE_ALL)
-    public static void prepareEnvironment() {
-        log("1. Configurando ambiente...");
-    }
-
-    @LifecycleHook(LifecycleHook.Event.AFTER_CONTAINER_LOAD)
-    public static void postDICheck() {
-        log("2. Verificando dependências...");
-    }
-
-    // @OnBoot executaria aqui
-
-    @LifecycleHook(LifecycleHook.Event.AFTER_STARTUP_METHOD)
-    public static void postStartup() {
-        log("3. Pós-inicialização...");
-    }
-
-    @LifecycleHook(LifecycleHook.Event.AFTER_ALL)
-    public static void cleanup() {
-        log("4. Finalizando processo...");
-    }
-}
-```
-
-## Fluxo de Execução Garantido
-
-### Ordem Estrita de Processamento
-1. `BEFORE_ALL`  
-   → 2. `AFTER_CONTAINER_LOAD`  
-   → 3. `@OnBoot`  
-   → 4. `AFTER_STARTUP_METHOD`  
-   → 5. `AFTER_ALL`
-
-### Regras Críticas
-
-- **Idempotência**:
-  ```diff
-  + Métodos devem produzir o mesmo resultado em múltiplas execuções.
-  - Evite operações não determinísticas.
-  ```
-- **Performance**: Cada hook adiciona tempo de inicialização → Mantenha operações essenciais
-
-# Agendador de Tarefas (@Schedule)
-
-- O sistema de agendamento permite que classes e métodos sejam executados periodicamente de forma automática após o boot da aplicação.
-
-## Habilitando o agendador
-
-- Para utilizar o sistema de tarefas agendadas, adicione a anotação **`@EnableSchedule`** na classe principal ou na classe marcada no **`@ApplicationBoot`**
-
-```java
-
 import dtm.di.application.startup.ManagedApplication;
 
-@EnableSchedule(threads = 4)
-@ApplicationBoot
-public class AppMain {
-  public static void main(String[] args) {
-    ManagedApplication.doRun(true);
-  }
-}
-```
-
-- **threads**: número de threads disponíveis para executar os métodos agendados. O padrão mínimo é 2.
-
-## Classe com tarefas agendadas
-
-- Para uma classe participar do agendamento, ela deve ser marcada com **`@Schedule`**.
-
-```java
-    import dtm.di.annotations.*;
-
-    @Schedule
-    public class RelatorioScheduler {
-    
-        @ScheduleMethod(time = 10, timeUnit = TimeUnit.SECONDS, startDelay = 5, periodic = true)
-        public void gerarRelatorioPeriodicamente() {
-            System.out.println("Relatório gerado: " + LocalDateTime.now());
-        }
-    }
-    
-```
-
-### Detalhes de `@ScheduleMethod`
-
-| Parâmetro    | Descrição                                                                 |
-|--------------|---------------------------------------------------------------------------|
-| `time`       | Intervalo entre execuções (em conjunto com `timeUnit`)                    |
-| `timeUnit`   | Unidade de tempo (`TimeUnit.SECONDS`, `TimeUnit.MILLISECONDS`, etc.)      |
-| `startDelay` | Tempo de atraso inicial antes da primeira execução                        |
-| `periodic`   | `true` para execução periódica, `false` para execução única (delayed)     |
-
-> **Importante**: o método deve ser `public`, sem parâmetros e não pode lançar exceções verificadas.
-
----
-
-###  Comportamento de Execução
-
-- O framework utiliza um `ScheduledThreadPoolExecutor` interno.
-- Métodos agendados são executados **assíncronamente** após a finalização do método `@OnBoot`.
-- Se `@EnableSchedule` não estiver presente, nenhuma tarefa será executada, mesmo com `@Schedule`.
-
-
-# Execução Assíncrona com `@Async`
-
-Use `@Async` em dois cenários diferentes:
-
-- Em **métodos**, para deslocar a execução de um método de um bean gerenciado
-  para um executor, sem bloquear quem o chamou.
-- Em **classes/beans**, para criar o bean em segundo plano e expor sua
-  resolução como `AsyncComponent<T>`.
-
-O modo por método é implementado como um aspecto de AOP; portanto, precisa ser
-habilitado no boot e o método deve ser chamado por meio da instância fornecida
-pelo container. O modo por classe participa do carregamento do container e
-registra a dependência como `AsyncComponent<T>`.
-
-## Habilitando
-
-Para métodos anotados com `@Async`, adicione `@EnableAsync` à classe anotada
-com `@ApplicationBoot` (ou à classe de configuração usada por ela), pois esse
-modo depende de AOP:
-
-```java
-import dtm.di.annotations.aop.EnableAsync;
-import dtm.di.annotations.boot.ApplicationBoot;
-
-@EnableAsync
-@ApplicationBoot(AppBootConfig.class)
-public class MainApplication {
+@ApplicationBoot(AppBoot.class)
+public final class Main {
     public static void main(String[] args) {
-        ManagedApplication.doRun(true);
+        ManagedApplication.doRun(true, args);
     }
 }
 ```
 
-Para classes/beans anotados com `@Async`, não há uma habilitação específica:
-basta que a classe também seja um bean descoberto pelo container, por exemplo
-com `@Component` ou `@Service`.
+O primeiro argumento habilita somente os logs do bootstrap. O default dos overloads que
+não recebem esse argumento é `false`.
 
-## Métodos assíncronos
+### 2. Classe de boot
 
 ```java
-import dtm.di.annotations.Async;
+package com.example;
+
+import dtm.di.annotations.boot.OnApplicationFail;
+import dtm.di.annotations.boot.OnBoot;
+
+public final class AppBoot {
+
+    @OnBoot
+    public static void start(GreetingService greetings, String[] args) {
+        System.out.println(greetings.message("Kernon"));
+    }
+
+    @OnApplicationFail
+    public static void fail(Throwable error, Thread thread) {
+        System.err.println("Boot falhou em " + thread.getName() + ": " + error.getMessage());
+    }
+}
+```
+
+`@OnBoot` pode receber `String[]`, o `DependencyContainer` exato ou dependências resolvidas
+pelo container. Use apenas um método `@OnBoot`: se houver mais de um, a escolha depende da
+ordem de reflexão e não é garantida.
+
+### 3. Serviço gerenciado
+
+```java
+package com.example;
+
 import dtm.di.annotations.Service;
-import dtm.di.prototypes.async.AsyncResult;
-import java.util.concurrent.CompletableFuture;
+import dtm.di.annotations.Singleton;
 
+@Singleton
 @Service
-public class ReportService {
-
-    @Async
-    public void generateAndStore(long reportId) {
-        // retorna imediatamente; o trabalho continua em outra thread
-        performGenerate(reportId);
-    }
-
-    @Async
-    public CompletableFuture<String> generate(long reportId) {
-        return CompletableFuture.completedFuture("report-" + reportId);
-    }
-
-    @Async
-    public AsyncResult<String> export(long reportId) {
-        return AsyncResult.ofResult("report-" + reportId + ".csv");
-    }
-
-    private void performGenerate(long reportId) {
-        // geração do relatório
+public class GreetingService {
+    public String message(String name) {
+        return "Olá, " + name;
     }
 }
 ```
 
-Os tipos de retorno aceitos são:
+Classes `@Component` e `@Service` são **prototype por default**: cada resolução pode criar
+outra instância. Use `@Singleton` quando a mesma instância deve ser reutilizada.
 
-| Retorno | Comportamento para quem chama |
-|---|---|
-| `void` ou `Void` | Retorna imediatamente. Exceções da tarefa não são devolvidas ao chamador. |
-| `CompletableFuture<T>` ou `CompletionStage<T>` | Retorna um `CompletableFuture` que conclui com o resultado ou a exceção. |
-| `Future<T>` | Retorna um `Future` submetido ao executor. |
-| `AsyncResult<T>` | Retorna a API fluente do Kernon: `onSuccess`, `onError`, `thenApply`, `whenComplete` e `await`. |
+## O que acontece no boot
 
-Qualquer outro retorno é inválido e causa `AsyncMethodException` quando o
-método é interceptado.
+A ordem externa confirmada é:
 
-## Beans assíncronos
+1. `ManagedApplication.doRun(...)` identifica a classe principal e o bootable.
+2. `BEFORE_ALL` executa sincronamente na thread que chamou `doRun`.
+3. Uma thread não daemon chamada `BootThread` carrega o container.
+4. `AFTER_CONTAINER_LOAD` executa depois de `container.load()`.
+5. O registro das tarefas `@Schedule` é disparado em background.
+6. O método `@OnBoot` executa na `BootThread`.
+7. Os beans `ApplicationRunner` executam, um por vez, na `BootThread`.
+8. `AFTER_STARTUP_METHOD` executa.
+9. `AFTER_ALL` executa no bloco `finally`, inclusive quando uma fase anterior falha.
 
-Quando `@Async` é aplicado na classe, o container instancia esse bean em
-segundo plano durante o carregamento. O bean não é registrado diretamente pelo
-tipo concreto; ele é registrado como `AsyncComponent<T>`, e o resultado real é
-obtido por `getAsync()`.
+Importante: `doRun(...)` **não aguarda o fim do boot**. Ele retorna depois de iniciar a
+`BootThread`. Não trate o retorno de `doRun` como sinal de aplicação pronta.
+
+Detalhes e ressalvas estão em [Comportamento do framework](docs/FRAMEWORK_BEHAVIOR.md).
+
+## Resolução em uma frase
+
+Para uma solicitação `(tipo, qualifier)`, Kernon:
+
+1. consulta o índice `@Primary` quando o qualifier solicitado é `default`;
+2. caso não haja primary, procura exatamente o qualifier solicitado;
+3. instancia ou devolve o registro encontrado;
+4. em lookup público ausente, registra erro no log e retorna `null`.
+
+`@Qualifier` explícito não cai para `@Primary`. Mais de um primary para o mesmo tipo causa
+falha de registro. Não há desempate garantido entre registros que colidem por alias de
+interface; use qualifiers distintos.
+
+## Defaults essenciais
+
+| Área | Default confirmado | Configurável por |
+|---|---|---|
+| Java | 21 | build da aplicação, respeitando a compatibilidade do artefato |
+| logs de boot | desabilitados | argumento `log` de `doRun` |
+| AOP no boot gerenciado | habilitado | `@DisableAop` no bootable |
+| AOP no container direto | desabilitado | `enableAOP()` antes de `load()` |
+| escopo de `@Component`/`@Service` | prototype | `@Singleton` |
+| bean de método produtor | singleton | `@BeanDefinition(proxyType = INSTANCE)` |
+| qualifier | `"default"` | `@Qualifier`; em método produtor, atributo de `@Component`/`@Service` |
+| profile | `default` | argumentos/perfis, CLI ou `settings.json` |
+| injeção de campos | `ADAPTIVE` | API ou `dependencyContainer.injectionStrategy` |
+| `ADAPTIVE` | sequencial até 10 campos; paralela acima de 10 | `PARALLEL` ou `SEQUENTIAL` |
+| `@EventListener` | síncrono, `order = 0` | `async` e `order` |
+| scheduler | desabilitado | `@EnableSchedule` no bootable |
+| threads do scheduler | 2; valores menores também viram 2 | `@EnableSchedule(threads = ...)` |
+| `@ScheduleMethod.timeUnit` | milissegundos | atributo da anotação |
+| intervalo de schedule `time <= 0` | 1000 unidades | `time` positivo |
+| executor de método `@Async` | `ForkJoinPool.commonPool()` | bean `AsyncExecutorFactory` |
+| executor de produtor `@Async` | executor principal do container | use `AsyncRegistrationFunction<T>` para escolher outro |
+| arquivo de settings | `settings.json` no classpath | bean `AppSettings` ou `JsonAppSettings` customizado |
+
+## Regras que evitam surpresas
+
+- Construtores são injetados sem `@Inject`; campos precisam de `@Inject`.
+- Para qualifier em parâmetro de construtor, use `@Qualifier`, não
+  `@Inject(qualifier = ...)`.
+- Em `@Configuration`, um método produtor precisa de `@Component` ou `@Service`.
+  `@BeanDefinition` sozinho não faz o método ser descoberto.
+- `@Profile` pode ser aplicado à classe `@Configuration` e a cada método produtor. Um
+  produtor inativo não entra no grafo, não é invocado e não registra bean.
+- Um produtor `@Async` registra imediatamente `AsyncComponent<T>` e executa a factory no
+  executor principal sem bloquear o carregamento. Outro produtor deve recebê-lo como
+  `AsyncComponent<T>`; parâmetro direto `T` falha com orientação explícita.
+- Classes `@Async` também precisam ser componentes e são resolvidas como
+  `AsyncComponent<T>`, não diretamente como `T`.
+- Métodos `@Async` dependem de `@EnableAsync`, AOP ativo e chamada pela instância
+  gerenciada.
+- No container principal, a classe de um listener declarativo precisa de `@Event`, além
+  do método `@EventListener`, para entrar no scan inicial.
+- `@ScheduleMethod` só tem efeito em uma classe `@Schedule` e com
+  `@EnableSchedule` no bootable.
+- Ordem entre componentes independentes, runners, métodos com o mesmo `order` e tarefas
+  paralelas não é garantida.
+- Falha de injeção em campo é logada e o campo pode permanecer `null`; ela não garante
+  falha do boot.
+- O shutdown hook chama `ON_CLOSE`, encerra o scheduler e descarrega o container.
+  `@PreDestroy` executa uma vez para cada singleton gerenciado; prototypes não possuem
+  descarte automático porque o container não retém suas instâncias. Beans proxied também
+  são deduplicados por objeto e assinatura de método.
+
+## Uso direto do container
+
+O container pode ser usado sem o boot gerenciado:
 
 ```java
-import dtm.di.annotations.Async;
-import dtm.di.annotations.Component;
+DependencyContainer container = DependencyContainerStorage.getInstance(Main.class);
+container.setInjectionStrategy(InjectionStrategy.SEQUENTIAL);
+container.enableAOP(); // opcional; o default direto é AOP desligado
+container.load();
 
-@Async
-@Component
-public class CacheWarmupService {
-
-    public CacheWarmupService() {
-        // inicialização custosa
-    }
-
-    public void warmup() {
-        // prepara caches
-    }
-}
+GreetingService service = container.getDependency(GreetingService.class);
+container.unload();
 ```
 
-Consuma o bean assíncrono injetando `AsyncComponent<T>`:
+`load()` é síncrono para o chamador quanto às etapas de registro, embora crie componentes
+da mesma camada em paralelo. Classes componente e métodos produtores `@Async` registram
+`AsyncComponent<T>` e deixam a construção do objeto real em background. O container
+padrão é mantido em um registro estático; trate-o como um container por processo e evite
+múltiplos boots gerenciados na mesma JVM.
 
-```java
-import dtm.di.annotations.Inject;
-import dtm.di.annotations.Service;
-import dtm.di.prototypes.async.AsyncComponent;
+## Erros e suporte operacional
 
-@Service
-public class StartupService {
+- Falhas antes da criação da `BootThread`, inclusive em `BEFORE_ALL`, são lançadas ao
+  chamador de `doRun`.
+- Falhas posteriores são encaminhadas ao handler configurado na thread de boot.
+- `@OnApplicationFail` é o fallback simples; após o container carregar, um
+  `@ExceptionHandler` descoberto pode substituí-lo.
+- Sem handler do Kernon, o framework delega ao `UncaughtExceptionHandler` anterior da JVM
+  ou imprime a stack trace.
+- A carga inicial do container não oferece rollback atômico documentado. A carga externa
+  em lote possui rollback coberto por testes.
 
-    @Inject
-    private AsyncComponent<CacheWarmupService> cacheWarmup;
+Consulte a [tabela completa de erros](docs/FRAMEWORK_BEHAVIOR.md#erros-e-propagacao) antes
+de definir políticas de retry ou readiness.
 
-    public void start() {
-        cacheWarmup.getAsync()
-                .onSuccess(CacheWarmupService::warmup)
-                .onError(error -> logger.error("Falha ao carregar cache", error));
-    }
-}
+## Verificação do projeto
+
+A suíte inclui testes de integração em JVM isolada para boot gerenciado, hooks, falha de
+boot, scheduler, `ApplicationRunner`, AOP com `@Async` e shutdown real. Execute:
+
+```shell
+mvn test
 ```
 
-Se você estiver usando o container diretamente, também pode resolver pelo tipo:
-
-```java
-AsyncComponent<CacheWarmupService> cacheWarmup =
-        container.getDependencyAsync(CacheWarmupService.class, true);
-
-CacheWarmupService service = cacheWarmup.getAsync().await();
-```
-
-Também é possível registrar um bean assíncrono por configuração usando
-`ComponentRegistor.ofAsync(...)`. Esse caminho é útil quando a criação do bean
-depende de uma factory, de um `Supplier` ou de um executor específico:
-
-```java
-import dtm.di.annotations.BeanDefinition;
-import dtm.di.annotations.Configuration;
-import dtm.di.common.ComponentRegistor;
-import dtm.di.prototypes.async.AsyncRegistrationFunction;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
-@Configuration
-public class CacheConfig {
-
-    @BeanDefinition
-    public AsyncRegistrationFunction<CacheClient> cacheClient() {
-        ExecutorService executor = Executors.newSingleThreadExecutor();
-
-        return ComponentRegistor.ofAsync(
-                CacheClient.class,
-                () -> new CacheClient("localhost"),
-                executor
-        );
-    }
-}
-```
-
-### Consumindo resultado e erros
-
-```java
-@Service
-public class NotificationService {
-
-    @Inject
-    private ReportService reports;
-
-    public void notifyUser(long reportId) {
-        reports.export(reportId)
-                .thenApply(path -> "Arquivo pronto: " + path)
-                .onSuccess(System.out::println)
-                .onError(error -> logger.error("Falha ao exportar", error));
-    }
-}
-```
-
-Para `CompletableFuture`, use normalmente `thenAccept`, `exceptionally` ou
-`whenComplete`. Para `AsyncResult`, `await()` bloqueia até a conclusão e, em
-caso de falha, propaga uma `CompletionException`.
-
-### Executor padrão e personalizado
-
-Sem configuração adicional, o `@Async` usa o `ForkJoinPool.commonPool()`. Para
-usar um pool da aplicação, registre um `AsyncExecutorFactory` no container:
-
-```java
-import dtm.di.annotations.*;
-import dtm.di.settings.async.AsyncExecutorFactory;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
-@Configuration
-public class AsyncConfig {
-
-    // Um único executor deve atender toda a aplicação.
-    @BeanDefinition(proxyType = BeanDefinition.ProxyType.STATIC)
-    public AsyncExecutorFactory asyncExecutorFactory() {
-        ExecutorService executor = Executors.newFixedThreadPool(4);
-        return AsyncExecutorFactory.ofSingleton(executor);
-    }
-}
-```
-
-> Registre `AsyncExecutorFactory` como um bean **singleton**. No exemplo,
-> `BeanDefinition.ProxyType.STATIC` garante uma única instância para o
-> container (e já é o padrão de `@BeanDefinition`). Isso evita criar pools de
-> threads a cada resolução da dependência. Gerencie também o ciclo de vida do
-> executor criado pela aplicação — por exemplo, mantenha a referência e
-> finalize-o em um método `@PreDestroy`.
-
-### Limitações importantes
-
-- Em métodos, AOP deve estar ativo; `@DisableAop` no bean ou no método impede
-  a interceptação.
-- Em classes, `@Async` registra a dependência como `AsyncComponent<T>`. Injete
-  ou resolva `AsyncComponent<T>` quando quiser acompanhar a criação do bean.
-- `AsyncComponent<T>.getAsync().await()` bloqueia até a criação terminar; use
-  callbacks como `onSuccess`/`onError` quando quiser manter o fluxo não
-  bloqueante.
-- Chamadas aninhadas como `this.export(...)` são suportadas: dentro de um bean
-  já criado, `this` referencia o proxy e o método anotado continua sendo
-  executado de forma assíncrona. A exceção são os construtores, pois o proxy
-  ainda não foi criado nessa fase; não invoque métodos `@Async` a partir deles.
-- Não chame `await()` na mesma thread quando isso eliminar o benefício da
-  execução assíncrona.
-
-
-# Resolução de Dependências Ambíguas (`@Primary`)
-
-Quando há **mais de uma implementação** do mesmo tipo no container e nenhum
-`@Qualifier` é especificado na injeção, o bean anotado com `@Primary` é o
-escolhido. Sem `@Primary`, o lookup mantém a regra atual (qualifier `"default"`).
-
-```java
-import dtm.di.annotations.*;
-
-public interface PaymentGateway {
-    void charge(long cents);
-}
-
-@Service
-@Primary
-public class StripeGateway implements PaymentGateway {
-    public void charge(long cents) { /* ... */ }
-}
-
-@Service
-@Qualifier("paypal")
-public class PaypalGateway implements PaymentGateway {
-    public void charge(long cents) { /* ... */ }
-}
-
-@Service
-public class CheckoutService {
-
-    @Inject
-    private PaymentGateway gateway; // resolve para StripeGateway (@Primary)
-
-    @Inject
-    @Qualifier("paypal")
-    private PaymentGateway paypalGateway; // resolve para PaypalGateway
-}
-```
-
-### Onde pode ser usado
-- Em classes anotadas com `@Component`/`@Service`.
-- Em métodos de fábrica dentro de `@Configuration` (junto com `@BeanDefinition`).
-
-### Regras
-- Se **nenhum** bean tiver `@Primary` e houver ambiguidade, a resolução continua
-  selecionando o entry registrado sob qualifier `"default"` — comportamento
-  retrocompatível.
-- Se mais de um bean estiver marcado com `@Primary`, vence o **primeiro encontrado**
-  na iteração do mapa. Considere isso um erro de design e prefira `@Qualifier` para
-  desambiguar explicitamente.
-
-
-# `@PreDestroy` — Liberação de Recursos
-
-Simétrico a `@PostCreation`. Métodos anotados são executados antes do bean ser
-descartado pelo container — durante `unload()` ou via shutdown hook do processo.
-
-```java
-import dtm.di.annotations.*;
-
-@Service
-public class ConnectionPool {
-
-    private DataSource dataSource;
-
-    @PostCreation
-    public void open() {
-        this.dataSource = createDataSource();
-    }
-
-    @PreDestroy(order = 10) // maior order roda primeiro
-    public void close() {
-        if (dataSource != null) dataSource.close();
-    }
-}
-```
-
-### Características
-- O método deve ser **público**, **sem parâmetros**, retorno **`void`** e **não estático**.
-- Maior `order` executa primeiro (ordem reversa em relação a `@PostCreation` —
-  reflete a semântica natural de teardown: feche o que foi aberto por último).
-- Exceções são logadas e ignoradas — o shutdown nunca para pela metade.
-- Disparado automaticamente pelo shutdown hook do `ManagedApplication`.
-  Em uso não-gerenciado, chame `dependencyContainer.unload()` no fim do programa.
-
-> **Limitação inerente da JVM**: `kill -9` ou crash não dispara shutdown hook.
-> Não use `@PreDestroy` para garantias de durabilidade — apenas para liberação ordenada.
-
-
-# `ApplicationRunner` — Tarefas Pós-Boot
-
-Beans que implementam `ApplicationRunner` são executados após o `@OnBoot`,
-recebendo os argumentos da linha de comando. Útil para migrações, importação
-de dados, jobs únicos de inicialização — sem precisar transformar tudo em
-método estático no bootable.
-
-```java
-import dtm.di.annotations.*;
-import dtm.di.application.ApplicationRunner;
-
-@Service
-public class DataSeederRunner implements ApplicationRunner {
-
-    @Inject
-    private UserRepository users;
-
-    @Override
-    public void run(String[] args) throws Exception {
-        if (args.length > 0 && "--seed".equals(args[0])) {
-            users.save(new User("admin"));
-        }
-    }
-}
-```
-
-### Comportamento
-- Executado **após** o método `@OnBoot` e **antes** do hook `AFTER_STARTUP_METHOD`.
-- Múltiplos runners executam na ordem em que o container os entrega.
-- Exceções propagam para o handler de erro de boot (mesmo caminho de `@OnApplicationFail`).
-
-
-# Eventos (`EventPublisher` + `@EventListener`)
-
-Sistema de pub/sub para comunicação entre beans em tempo de execução —
-complementar aos `@LifecycleHook` (que são apenas eventos do ciclo de boot).
-
-### Publicar
-
-Injete o `EventPublisher` em qualquer bean:
-
-```java
-import dtm.di.annotations.*;
-import dtm.di.event.EventPublisher;
-
-public record OrderPlacedEvent(String orderId, long amountCents) {}
-
-@Service
-public class OrderService {
-
-    @Inject
-    private EventPublisher events;
-
-    public void place(Order order) {
-        // ...persistir...
-        events.publish(new OrderPlacedEvent(order.id(), order.total()));
-    }
-}
-```
-
-### Reagir
-
-Métodos anotados com `@EventListener` em qualquer bean do container recebem
-eventos compatíveis com o tipo do parâmetro (suporta herança e interfaces):
-
-```java
-import dtm.di.annotations.*;
-import dtm.di.annotations.event.EventListener;
-
-@Service
-public class EmailNotifier {
-
-    @EventListener
-    public void onOrderPlaced(OrderPlacedEvent event) {
-        // notifica cliente — síncrono na thread do publisher
-    }
-
-    @EventListener(async = true, order = 10)
-    public void auditAsync(OrderPlacedEvent event) {
-        // roda no executor do container, não bloqueia o publisher
-    }
-}
-```
-
-### Listeners com múltiplos parâmetros
-
-Quando o método tem **mais de um parâmetro**, marque o receptor do evento com
-`@Event`. Os demais parâmetros são resolvidos pelo container — exatamente como
-em construtores de beans, inclusive com suporte a `@Qualifier`:
-
-```java
-import dtm.di.annotations.*;
-import dtm.di.annotations.event.Event;
-import dtm.di.annotations.event.EventListener;
-
-@Service
-public class OrderListeners {
-
-    @EventListener
-    public void onPlaced(@Event OrderPlacedEvent event, EmailService email, AuditLogger audit) {
-        // 'event' vem do publisher; 'email' e 'audit' vêm do container
-        email.send(event.orderId());
-        audit.record(event);
-    }
-
-    @EventListener(async = true)
-    public void onPlacedQualified(@Event OrderPlacedEvent event, @Qualifier("primary") MetricsCollector metrics) {
-        metrics.increment("orders.placed");
-    }
-}
-```
-
-> Para listeners com **um único parâmetro**, `@Event` é opcional — o parâmetro é
-> automaticamente tratado como receptor do evento. Se houver múltiplos parâmetros e
-> nenhum (ou mais de um) estiver marcado com `@Event`, o listener é descartado com
-> warning no log.
-
-### Características
-| Atributo                 | Comportamento                                                            |
-|--------------------------|---------------------------------------------------------------------------|
-| Match de tipo            | `parametro.isAssignableFrom(evento.getClass())` — herança e interfaces    |
-| `async = false` (padrão) | Executa síncrono na thread chamadora; exceções propagam ao publisher      |
-| `async = true`           | Executa no executor compartilhado do container; exceções são logadas      |
-| `order`                  | Menor `order` executa antes (apenas em modo síncrono)                     |
-| Receptor do evento       | Único parâmetro (auto) ou parâmetro marcado com `@Event` (multi-param)    |
-| Demais parâmetros        | Resolvidos via container — suportam `@Qualifier`/`@Inject(qualifier=…)`   |
-| Requisitos do método     | Não estático, retorno `void`                                              |
-
-### Sobrescrever o publisher
-
-O `EventPublisher` padrão é registrado automaticamente no fim do `load()`. Se quiser
-substituí-lo (ex.: integrar com um message broker), basta registrar o seu via
-`@Configuration` antes — o framework não sobrescreve um `EventPublisher` já presente.
-
-```java
-@Configuration
-public class EventConfig {
-
-    @BeanDefinition(proxyType = BeanDefinition.ProxyType.STATIC)
-    @Service
-    public EventPublisher customPublisher() {
-        return new KafkaBackedPublisher(/* ... */);
-    }
-}
-```
-
-
-# Settings (`AppSettings` + `@Value`)
-
-Camada de configuração externa baseada em um arquivo JSON — análogo ao
-`IConfiguration` do C# e ao `@Value` do Spring. Funciona de duas formas:
-**programática** (injetando a interface `AppSettings`) ou **declarativa**
-(anotação `@Value` em campos).
-
-## O arquivo `settings.json`
-
-O framework lê **somente do classpath**: coloque o arquivo em
-`src/main/resources/settings.json`. Ele será empacotado no JAR e carregado em
-memória durante o boot. **É read-only em runtime** — para mudar valores, edite
-o recurso e re-empacote.
-
-Se o arquivo não existir no classpath, o framework loga um warning e segue
-com configuração vazia — toda leitura passa a retornar o `defaultValue` fornecido.
-
-```json
-{
-  "text": {
-    "val": 1
-  },
-  "db": {
-    "url": "jdbc:postgresql://localhost/app",
-    "maxConnections": 20
-  }
-}
-```
-
-
-
-> Chaves em **notação de ponto** navegam pela árvore: `text.val`, `db.url`.
-
-## Modo programático: injetar `AppSettings`
-
-```java
-import dtm.di.annotations.*;
-import dtm.di.settings.AppSettings;
-
-@Service
-public class FeatureService {
-
-    @Inject
-    private AppSettings settings;
-
-    public void run() {
-        int v        = settings.getInt("text.val", 0);
-        String url   = settings.getString("db.url", "jdbc:default");
-        DbConfig db  = settings.getObject("db", DbConfig.class);
-        boolean has  = settings.has("text.val");
-    }
-}
-```
-
-| Método                                    | Comportamento                                                                |
-|-------------------------------------------|------------------------------------------------------------------------------|
-| `getString/getInt/getLong/getDouble/getBoolean(key, default)` | Retorna o `default` se a chave não existir ou for inválida.                  |
-| `getObject(key, type)`                    | Desserializa via Jackson; se ausente/erro, retorna nova instância via construtor default (ou `null` se a classe não tiver um). |
-| `has(key)`                                | `true` se a chave existir (mesmo que com valor `null`).                      |
-
-## Modo declarativo: `@Value`
-
-```java
-import dtm.di.annotations.*;
-import dtm.di.annotations.settings.Value;
-
-@Service
-public class DbService {
-
-    @Value(key = "db.url", defaultValue = "jdbc:h2:mem:default")
-    private String url;
-
-    @Value(key = "db.maxConnections", defaultValue = "10")
-    private int maxConnections;
-
-    @Value(key = "db")               // objeto inteiro
-    private DbConfig config;
-}
-```
-
-### Regras
-- `@Value` **não exige** combinar com `@Inject` — sua presença basta para o
-  framework resolver o campo.
-- Para tipos primitivos / `String` / wrappers (`Integer`, `Long`, `Double`,
-  `Boolean`, `Float`, `Short`, `Byte`), o `defaultValue()` (string) é
-  parseado para o tipo do campo se a chave não existir.
-- Para qualquer outro tipo: desserializado via Jackson. Se ausente ou inválido,
-  o framework cria uma nova instância via construtor default. Sem construtor
-  default → injetado `null`.
-
-## Sobrescrever a implementação
-
-O framework registra `JsonAppSettings` automaticamente durante `load()`,
-apenas se nenhum `AppSettings` já estiver presente. Para usar outro nome de
-recurso, ou outra fonte (variáveis de ambiente, Vault, banco de dados),
-registre o seu via `@Configuration`:
-
-```java
-@Configuration
-public class SettingsConfig {
-
-    @Service
-    @BeanDefinition(proxyType = BeanDefinition.ProxyType.STATIC)
-    public AppSettings settings() {
-        return new JsonAppSettings("config/myapp.json"); // outro recurso do classpath
-    }
-}
-```
-
-## Registrar settings externos
-
-A implementação padrão também é registrada como `AppSettingsRegistry`. O registry
-permite incorporar JSON em runtime sem substituir a API de leitura existente:
-
-```java
-import dtm.di.annotations.Inject;
-import dtm.di.settings.AppSettingsRegistry;
-import dtm.di.settings.SettingsRegistrationMode;
-
-public class PluginLoader {
-
-    @Inject
-    private AppSettingsRegistry settingsRegistry;
-
-    public void configure(ClassLoader pluginClassLoader) {
-        // Sem modo explícito, KEEP é utilizado.
-        settingsRegistry.register("{\"feature\": {\"enabled\": true}}");
-
-        // Lê settings.json e settings.<profile>.json do classloader informado.
-        settingsRegistry.register(pluginClassLoader, SettingsRegistrationMode.OVERRIDE);
-    }
-}
-```
-
-Também estão disponíveis overloads para `Path` e `Class<?>`. `String` e `Path`
-representam um único documento; somente `Class` e `ClassLoader` procuram os arquivos
-dos profiles ativos. O merge é recursivo por propriedade: `KEEP` conserva valores
-existentes e `OVERRIDE` os substitui.
-
-O settings principal controla o registry:
-
-```json
-{
-  "settingsRegistry": {
-    "enabled": true,
-    "allowedModes": ["KEEP", "OVERRIDE"],
-    "failOnPolicyOverride": true
-  }
-}
-```
-
-- `enabled: false` bloqueia todos os registros.
-- `allowedModes` ausente, vazio ou com tipo incorreto usa somente `KEEP`, sem warning.
-- Um nome de modo desconhecido gera warning e também aplica o fallback `[KEEP]`.
-- Com `failOnPolicyOverride: true`, uma fonte externa que contenha `settingsRegistry`
-  é rejeitada integralmente. Com `false`, somente essa propriedade é descartada
-  silenciosamente e as demais são registradas.
-- A política é calculada após os profiles principais e não pode ser alterada por
-  registros externos.
-- JSON explícito inválido, arquivo ilegível ou `settings.json` externo ausente lança
-  `SettingsRegistrationException` sem modificar o estado anterior.
-
-O registro não atualiza campos `@Value` que já foram injetados. Leituras programáticas
-e injeções realizadas depois do registro observam os novos valores.
-
-
-# Configurações 
-- O framework utiliza a anotação `@Configuration` para configrar os gerenciamentos
-- A resolução de dependências (em métodos, campos ou construtores) segue a seguinte ordem:
-  - **Beans** externos registrados manualmente no container têm prioridade. Se uma dependência requisitada já estiver registrada externamente, ela será utilizada diretamente
-  - **Beans internos detectados automaticamente**: caso a dependência não esteja registrada externamente, o framework tentará resolver e instanciar automaticamente um bean compatível, utilizando anotações como, @Component, etc.
-
-
-# Diagrama de Fluxo
-![Diagrama de Fluxo](/docs/imgs/fluxo_managed_app.png)
-
-
-## Não Gerenciado
-
-### 1. Classe Principal Exemplo
-
-```java
-import dtm.di.annotations.*;
-import dtm.di.annotations.aop.Aspect;
-import dtm.di.annotations.aop.BeforeExecution;
-import dtm.di.annotations.aop.Pointcut;
-import dtm.di.storage.containers.DependencyContainerStorage;
-import dtm.di.core.DependencyContainer;
-import dtm.di.core.InjectionStrategy;
-
-public class Main {
-
-  private final MainService1 mainService1;
-
-  @Inject
-  @Qualifier("MainService2")
-  private MainService2 mainService2;
-
-  @Inject(qualifier = "MainService3")
-  private MainService3 mainService3;
-
-  public Main(MainService1 mainService) {
-    this.mainService1 = mainService;
-  }
-
-  public static void main(String[] args) {
-    DependencyContainer dependencyContainer = DependencyContainerStorage.getInstance(Main.class);
-    dependencyContainer.setInjectionStrategy(InjectionStrategy.PARALLEL);
-    dependencyContainer.enableAOP();
-    dependencyContainer.load();
-
-    Main mainClass1 = dependencyContainer.newInstance(Main.class);
-
-    Main mainClass2 = new Main(new MainService1());
-    dependencyContainer.injectDependencies(mainClass2);
-  }
-
-  @Singleton
-  @Service
-  public static class MainService1 {
-
-    public void action() {
-      System.out.println("MainService1.action");
-    }
-  }
-
-  @Qualifier("MainService2")
-  @Service
-  public static class MainService2 {
-
-    public void action() {
-      System.out.println("MainService2.action");
-    }
-  }
-
-  @Service
-  public static class MainService3 {
-
-    public void action() {
-      System.out.println("MainService3.action");
-    }
-  }
-
-  @Aspect
-  public static class MainAspect {
-
-    @Pointcut
-    public boolean pointcut(Method method, Object[] args, @ProxyInstance Object proxy) {
-      return true;
-    }
-
-    @BeforeExecution
-    public void before(Method method, Object[] args, @ProxyInstance Object proxy) {
-
-    }
-
-    @BeforeExecution
-    public Object after(Method method, Object[] args, @ProxyInstance Object proxy, @ResultProxy Object currentResult) {
-      return currentResult;
-    }
-
-  }
-
-  @Configuration
-  public static class MinhaConfig {
-
-    // BeanDefinition.ProxyType.INSTANCE para não simgleton mas cuidado pois o não singleton ele recontroi a intancia
-    @BeanDefinition(proxyType = BeanDefinition.ProxyType.STATIC)
-    @Service(qualifier = "MainService3")
-    public MainService3 mainService3() {
-      return new MainService3();
-    }
-  }
-
-}
-```
-
-### Estratégia de injeção (`InjectionStrategy`)
-
-#### Configuração programática
-
-Para controlar como os campos anotados com `@Inject` e `@Value` são processados, use
-`setInjectionStrategy(InjectionStrategy strategy)`:
-
-```java
-DependencyContainer dependencyContainer = DependencyContainerStorage.getInstance(Main.class);
-dependencyContainer.setInjectionStrategy(InjectionStrategy.ADAPTIVE);
-dependencyContainer.load();
-```
-
-#### Configuração declarativa
-
-A estratégia também pode ser definida no `settings.json`:
-
-```json
-{
-  "dependencyContainer": {
-    "injectionStrategy": "PARALLEL"
-  }
-}
-```
-
-Os arquivos de profile, como `settings.dev.json`, podem sobrescrever esse valor seguindo
-as mesmas regras dos demais settings. O nome da estratégia não diferencia maiúsculas de
-minúsculas.
-
-O contêiner também considera uma implementação de `AppSettings` fornecida por um bean de
-`@Configuration`:
-
-```java
-@Configuration
-public class SettingsConfiguration {
-
-  @BeanDefinition
-  @Service
-  @DisableAop
-  public AppSettings appSettings() {
-    return new JsonAppSettings("config/myapp.json");
-  }
-}
-```
-
-Esse bean deve ser criado antes dos serviços e, portanto, não deve depender de um serviço
-gerenciado pelo contêiner. A estratégia é lida dele antes da criação e da injeção dos
-demais componentes.
-
-As estratégias disponíveis são:
-
-- `ADAPTIVE`: estratégia padrão. Executa sequencialmente quando há até 10 campos para
-  injetar e em paralelo quando há mais de 10.
-- `PARALLEL`: força a injeção paralela, independentemente da quantidade de campos.
-- `SEQUENTIAL`: força a injeção sequencial, o que pode ser útil para reduzir o custo de
-  concorrência ou facilitar a depuração.
-
-A ordem de precedência é:
-
-1. A chamada programática a `setInjectionStrategy(...)` antes de `load()`.
-2. A propriedade `dependencyContainer.injectionStrategy` dos settings.
-3. `ADAPTIVE`, quando nenhuma configuração válida for informada.
-
-Uma chamada programática com `null` seleciona `ADAPTIVE` e também tem precedência sobre
-o valor declarativo. Um valor declarativo desconhecido gera um warning e usa `ADAPTIVE`.
+Também há regressões para `@PreDestroy` global, rejeição transacional de dois beans
+`@Primary` do mesmo tipo e produtores com `@Profile`/`@Async` nos fluxos inicial e externo.

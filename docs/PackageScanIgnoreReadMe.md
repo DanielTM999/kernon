@@ -1,115 +1,65 @@
+# Controle de package scan (`@PackageScanIgnore`)
 
-# Controle de Escaneamento de Pacotes (`@PackageScanIgnore`)
+`@PackageScanIgnore` declara termos a ignorar na descoberta. Ela é repetível por meio de
+`@PackageScansIgnore` e deve ficar no bootable para ser lida pelo boot gerenciado.
 
-O framework permite excluir pacotes específicos do processo de escaneamento automático por meio da anotação `@PackageScanIgnore`. Isso ajuda a evitar a análise de classes irrelevantes, reduzindo a sobrecarga e prevenindo conflitos com bibliotecas externas.
+## Parâmetros
 
----
+| Parâmetro | Default | Comportamento no bootstrap |
+|---|---|---|
+| `ignorePackage` | array vazio | termos adicionados ou usados como substituição |
+| `scanType` | `INCREMENT` | `INCREMENT` adiciona; `REPLACE` limpa e substitui |
+| `scanElement` | `"default"` | somente `"jar"`, sem diferenciar maiúsculas, seleciona jars; qualquer outro valor seleciona packages |
 
-## Exemplo básico de uso
-
-```java
-@PackageScanIgnore(
-    ignorePackage = {"classfinder", "byte-buddy"},
-    scanType = PackageScanIgnore.ScanType.INCREMENT,
-    scanElement = "jar"
-)
-```
-Esse exemplo evita escanear pacotes vindos de JARs externos que contenham `classfinder` ou `byte-buddy`.
-
----
-
-## Diferenças entre os parâmetros
-
-| Parâmetro        | Descrição                                                                                    |
-|------------------|----------------------------------------------------------------------------------------------|
-| `ignorePackage`  | Lista de pacotes (prefixos) que serão ignorados no escaneamento.                             |
-| `scanType`       | Define a forma de exclusão:                                                                  |
-|                  | - `INCREMENT`: adiciona os pacotes ignorados à lista atual.                                  |
-|                  | - `REPLACE`: substitui completamente a lista de pacotes ignorados, ignorando os anteriores.  |
-| `scanElement`    | Define o contexto do escaneamento:                                                           |
-|                  | - `"jar"`: ignora os JARs inteiros que contenham os pacotes especificados (não abre o JAR).  |
-|                  | - `"package"`: ignora os pacotes no classpath local, ou seja, no código fonte ou jar gerado. |
-
----
-
-## Atenção: não ignore os pacotes internos do framework
-
-⚠️ Ignorar os pacotes do próprio framework (por exemplo, `dtm.di`) com `ScanType.REPLACE` e `scanElement = "package"` pode fazer com que a aplicação inicialize "vazia", sem executar nenhuma lógica, e sem lançar erros explícitos.
-
-### Exemplo inválido:
-
-## ⚠️ Cuidado ao usar `ScanType.REPLACE`
-
-Usar `ScanType.REPLACE` substitui completamente a lista de pacotes ignorados previamente definidos, inclusive os internos do próprio framework que podem ser essenciais para a inicialização correta da aplicação.
-
-### Por que isso é perigoso?
-
-- **Substituição total**: Todos os pacotes ignorados anteriormente — inclusive os padrões definidos internamente — são descartados.
-- **Perda de escaneamento essencial**: Se você usar `REPLACE` e ignorar pacotes fundamentais (como `dtm.di`), o ciclo de vida da aplicação pode não ser iniciado corretamente.
-- **Inicialização silenciosa**: A aplicação pode "subir", mas sem executar qualquer lógica anotada, resultando em um comportamento enganoso e difícil de depurar.
-
+Exemplo de intenção:
 
 ```java
 @PackageScanIgnore(
-    ignorePackage = {"dtm.di"},
-    scanType = PackageScanIgnore.ScanType.REPLACE,
-    scanElement = "package"
-)
-```
-
-**O que acontece?**
-
-- O escaneador ignora todo o pacote `dtm.di`.
-- Como resultado, nenhuma classe anotada (como `@ApplicationBoot`, `@OnBoot`) será detectada.
-- O ciclo de inicialização do framework não é executado.
-- A aplicação "funciona", mas sem efeito algum — nenhuma lógica executada.
-
----
-
-
-
-## Exemplos válidos para uso seguro
-
-### Ignorar bibliotecas externas sem afetar o código local
-
-```java
-@PackageScanIgnore(
-    ignorePackage = {"classfinder", "byte-buddy"},
-    scanType = PackageScanIgnore.ScanType.INCREMENT,
-    scanElement = "jar"
-)
-```
-
-### Ignorar pacotes específicos no código local sem substituir completamente a lista
-
-```java
-@PackageScanIgnore(
-    ignorePackage = {"com.exemplo.unused"},
+    ignorePackage = {"com.example.generated"},
     scanType = PackageScanIgnore.ScanType.INCREMENT,
     scanElement = "package"
 )
+public final class AppBoot {}
 ```
 
----
+## Defaults internos do scanner
 
-## Boas práticas recomendadas
+O container padrão monta uma configuração que ignora estes termos de jar:
 
-- **Prefira `INCREMENT` ao adicionar filtros** para não substituir acidentalmente as exclusões internas do framework.
-- **Nunca ignore completamente os pacotes do framework (`dtm.di`, `dtm.internal`) no escaneamento local.**
-- **Verifique se existe ao menos uma classe anotada com `@ApplicationBoot` detectável para garantir o funcionamento da aplicação.**
-- Use `scanElement = "jar"` para ignorar bibliotecas externas inteiras e `scanElement = "package"` para pacotes locais.
+```text
+lombok
+byte-buddy
+logback-classic
+slf4j-api
+classfinder
+```
 
----
+E estes termos de package:
 
-## Resumo rápido
+```text
+net.bytebuddy
+ch.qos.logback
+lombok
+```
 
-| Cenário                            | Recomendações                             |
-|----------------------------------|-----------------------------------------|
-| Ignorar bibliotecas externas      | `scanElement = "jar"` + `INCREMENT`     |
-| Ignorar pacotes locais extras     | `scanElement = "package"` + `INCREMENT`|
-| Evitar ignorar pacotes do framework | Nunca usar `REPLACE` para `dtm.di`     |
+## Limitação atual do container padrão
 
----
+No boot, os valores de `@PackageScanIgnore` são aplicados à configuração retornada pelo
+container. Porém, no começo de `DependencyContainerStorage.loadSystemClasses()`, o
+container padrão substitui essa configuração por uma nova instância antes de chamar o
+scanner.
 
-Se tiver dúvidas ou precisar de exemplos mais específicos, consulte a documentação detalhada ou entre em contato com o time de desenvolvimento.
+Consequência: **não foi confirmado efeito prático de `@PackageScanIgnore` no fluxo do
+container padrão atual**. A inspeção do código indica que os filtros da anotação são
+perdidos. Não use essa anotação como limite de segurança, isolamento ou garantia de
+performance nessa implementação.
 
+Um `ClassFinderDependencyContainer` customizado pode preservar a configuração, mas esse
+contrato depende da implementação customizada e não é garantido pelo Kernon padrão.
+
+## Risco de `REPLACE`
+
+Quando a configuração é efetivamente respeitada por um container customizado,
+`REPLACE` remove todos os defaults da lista escolhida. Isso pode reintroduzir bibliotecas
+internas na varredura ou excluir pacotes essenciais, conforme os termos fornecidos.
+Prefira `INCREMENT` salvo quando a substituição total for deliberada e testada.

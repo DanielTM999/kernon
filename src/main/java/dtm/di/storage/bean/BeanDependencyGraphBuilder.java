@@ -13,6 +13,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.lang.reflect.*;
 import java.util.*;
+import java.util.function.Predicate;
 
 @Slf4j
 public class BeanDependencyGraphBuilder {
@@ -20,11 +21,17 @@ public class BeanDependencyGraphBuilder {
     private final Set<Class<?>> serviceClasses;
     private final Map<String, BeanInfo> allBeans;
     private final Map<Class<?>, String> typeToBeanId;
+    private final Predicate<Method> beanMethodFilter;
 
     public BeanDependencyGraphBuilder(Set<Class<?>> serviceClasses) {
+        this(serviceClasses, method -> true);
+    }
+
+    public BeanDependencyGraphBuilder(Set<Class<?>> serviceClasses, Predicate<Method> beanMethodFilter) {
         this.serviceClasses = serviceClasses;
         this.allBeans = new LinkedHashMap<>();
         this.typeToBeanId = new HashMap<>();
+        this.beanMethodFilter = Objects.requireNonNull(beanMethodFilter, "beanMethodFilter não pode ser null");
     }
 
     public BeanGraph buildGraph(Set<Class<?>> configClasses) {
@@ -77,7 +84,7 @@ public class BeanDependencyGraphBuilder {
 
     private void extractBeanMethods(Class<?> configClass) {
         for (Method method : ReflectionCache.methods(configClass)) {
-            if (!isBeanMethod(method)) {
+            if (!isBeanMethod(method) || !beanMethodFilter.test(method)) {
                 continue;
             }
 
@@ -88,7 +95,7 @@ public class BeanDependencyGraphBuilder {
             methodDeps.add(configClass);
 
             for (Parameter param : method.getParameters()) {
-                methodDeps.add(param.getType());
+                methodDeps.add(extractDependencyType(param));
             }
 
             BeanInfo beanDef = BeanInfo.builder()
@@ -110,9 +117,7 @@ public class BeanDependencyGraphBuilder {
     private Class<?> extractProcucedType(Method method){
         Class<?> returnType = method.getReturnType();
 
-        if(AsyncRegistrationFunction.class.isAssignableFrom(returnType)){
-            returnType = AsyncComponent.class;
-        }else if(RegistrationFunction.class.isAssignableFrom(returnType)){
+        if(RegistrationFunction.class.isAssignableFrom(returnType)){
             Type genericReturnType = method.getGenericReturnType();
 
             if (genericReturnType instanceof ParameterizedType parameterizedType) {
@@ -130,6 +135,25 @@ public class BeanDependencyGraphBuilder {
         }
 
         return returnType;
+    }
+
+    private Class<?> extractDependencyType(Parameter parameter){
+        if(!AsyncComponent.class.equals(parameter.getType())){
+            return parameter.getType();
+        }
+
+        Type parameterType = parameter.getParameterizedType();
+        if(parameterType instanceof ParameterizedType parameterizedType){
+            Type targetType = parameterizedType.getActualTypeArguments()[0];
+            if(targetType instanceof Class<?> targetClass){
+                return targetClass;
+            }
+            if(targetType instanceof ParameterizedType nestedType){
+                return (Class<?>) nestedType.getRawType();
+            }
+        }
+
+        return parameter.getType();
     }
 
     private void resolveDependencies() {

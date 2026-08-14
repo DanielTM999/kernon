@@ -17,12 +17,16 @@ public final class ExternalFixtures {
     public static final String BETA_SPEAKER = "ext.BetaSpeaker";
     public static final String REPORTER = "ext.Reporter";
     public static final String PRIMARY_REPORTER = "ext.PrimaryReporter";
+    public static final String SECOND_PRIMARY_REPORTER = "ext.SecondPrimaryReporter";
     public static final String FALLBACK_REPORTER = "ext.FallbackReporter";
     public static final String ACTIVE_PROFILE_SERVICE = "ext.ActiveProfileService";
     public static final String INACTIVE_PROFILE_SERVICE = "ext.InactiveProfileService";
     public static final String CONFIG_BEAN = "ext.ConfigBean";
     public static final String COMPONENT_AWARE_BEAN = "ext.ComponentAwareBean";
     public static final String EXTERNAL_CONFIGURATION = "ext.ExternalConfiguration";
+    public static final String PROFILED_PRODUCER_CONFIGURATION = "ext.ProfiledProducerConfiguration";
+    public static final String ASYNC_PRODUCER_CONFIGURATION = "ext.AsyncProducerConfiguration";
+    public static final String FAILING_ASYNC_PRODUCER_CONFIGURATION = "ext.FailingAsyncProducerConfiguration";
     public static final String ORPHAN_BEAN = "ext.OrphanBean";
     public static final String FAILING_CONFIGURATION = "ext.FailingConfiguration";
     public static final String CYCLE_A = "ext.CycleA";
@@ -258,6 +262,24 @@ public final class ExternalFixtures {
                 }
                 """);
 
+        sources.put(SECOND_PRIMARY_REPORTER, """
+                package ext;
+
+                import dtm.di.annotations.Component;
+                import dtm.di.annotations.Primary;
+                import dtm.di.annotations.Singleton;
+
+                @Singleton
+                @Component
+                @Primary
+                public class SecondPrimaryReporter implements Reporter {
+                    @Override
+                    public String report() {
+                        return "second-primary";
+                    }
+                }
+                """);
+
         sources.put(FALLBACK_REPORTER, """
                 package ext;
 
@@ -380,6 +402,84 @@ public final class ExternalFixtures {
                     public ComponentAwareBean componentAwareBean(BaseService base) {
                         Probe.record("ExternalConfiguration.componentAwareBean");
                         return new ComponentAwareBean("config:" + base.greet());
+                    }
+                }
+                """);
+
+        sources.put(PROFILED_PRODUCER_CONFIGURATION, """
+                package ext;
+
+                import dtm.di.annotations.Component;
+                import dtm.di.annotations.Configuration;
+                import dtm.di.annotations.Profile;
+                import dtm.di.testsupport.Probe;
+
+                @Configuration
+                public class ProfiledProducerConfiguration {
+
+                    @Profile("test")
+                    @Component
+                    public ConfigBean activeBean() {
+                        Probe.record("ProfiledProducer.active");
+                        return new ConfigBean("profile-test");
+                    }
+
+                    @Profile("disabled-profile")
+                    @Component
+                    public OrphanBean inactiveBean() {
+                        Probe.record("ProfiledProducer.inactive");
+                        return new OrphanBean();
+                    }
+                }
+                """);
+
+        sources.put(ASYNC_PRODUCER_CONFIGURATION, """
+                package ext;
+
+                import dtm.di.annotations.Async;
+                import dtm.di.annotations.Component;
+                import dtm.di.annotations.Configuration;
+                import dtm.di.prototypes.async.AsyncComponent;
+                import dtm.di.testsupport.Probe;
+
+                @Configuration
+                public class AsyncProducerConfiguration {
+
+                    @Async
+                    @Component
+                    public ConfigBean asyncBean() {
+                        Probe.record("AsyncProducer.thread:" + Thread.currentThread().getName());
+                        Probe.record("AsyncProducer.completed");
+                        return new ConfigBean("async");
+                    }
+
+                    @Component
+                    public ComponentAwareBean dependentBean(AsyncComponent<ConfigBean> configBean) {
+                        Probe.record("AsyncProducer.dependent");
+                        return new ComponentAwareBean("async-wrapper");
+                    }
+                }
+                """);
+
+        sources.put(FAILING_ASYNC_PRODUCER_CONFIGURATION, """
+                package ext;
+
+                import dtm.di.annotations.Async;
+                import dtm.di.annotations.Component;
+                import dtm.di.annotations.Configuration;
+
+                @Configuration
+                public class FailingAsyncProducerConfiguration {
+
+                    @Component
+                    public OrphanBean orphanBean() {
+                        return new OrphanBean();
+                    }
+
+                    @Async
+                    @Component
+                    public ConfigBean failingBean(OrphanBean orphanBean) {
+                        throw new IllegalStateException("falha proposital no produtor async");
                     }
                 }
                 """);
