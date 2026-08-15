@@ -263,6 +263,52 @@ class JsonAppSettingsRegistryTest {
     }
 
     @Test
+    void explicitRequiredTrueKeepsMissingClassLoaderBaseAsAnError() throws Exception {
+        JsonAppSettings settings = settingsWithPolicy(
+                "{\"settingsRegistry\": {\"required\": true}}"
+        );
+        Path emptyRoot = Files.createDirectories(tempDir.resolve("empty-required-loader"));
+
+        try (URLClassLoader loader = new URLClassLoader(new java.net.URL[]{emptyRoot.toUri().toURL()}, null)) {
+            assertThrows(SettingsRegistrationException.class, () -> settings.register(loader));
+        }
+    }
+
+    @Test
+    void requiredFalseIgnoresClassLoaderWithoutSettingsResources() throws Exception {
+        JsonAppSettings settings = settingsWithPolicy(
+                "{\"settingsRegistry\": {\"required\": false}, \"stable\": 1}",
+                "dev"
+        );
+        Path emptyRoot = Files.createDirectories(tempDir.resolve("empty-optional-loader"));
+
+        try (URLClassLoader loader = new URLClassLoader(new java.net.URL[]{emptyRoot.toUri().toURL()}, null)) {
+            settings.register(loader);
+        }
+
+        assertEquals(1, settings.getInt("stable", -1));
+    }
+
+    @Test
+    void requiredFalseLoadsAvailableProfileWithoutBaseSettings() throws Exception {
+        JsonAppSettings settings = settingsWithPolicy(
+                "{\"settingsRegistry\": {\"required\": false}}",
+                "dev"
+        );
+        Path externalRoot = Files.createDirectories(tempDir.resolve("profile-only-loader"));
+        Files.writeString(externalRoot.resolve("settings.dev.json"), "{\"profileOnly\": true}");
+
+        try (URLClassLoader loader = new URLClassLoader(
+                new java.net.URL[]{externalRoot.toUri().toURL()},
+                null
+        )) {
+            settings.register(loader);
+        }
+
+        assertTrue(settings.getBoolean("profileOnly", false));
+    }
+
+    @Test
     void supportsConcurrentReadsAndRegistrations() throws Exception {
         JsonAppSettings settings = settingsWithPolicy(
                 "{\"settingsRegistry\": {\"allowedModes\": [\"KEEP\", \"OVERRIDE\"]}}"

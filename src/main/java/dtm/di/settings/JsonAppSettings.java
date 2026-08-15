@@ -42,6 +42,7 @@ public class JsonAppSettings implements AppSettings, AppSettingsRegistry {
 
     private static final String REGISTRY_PROPERTY = "settingsRegistry";
     private static final String ENABLED_PROPERTY = "enabled";
+    private static final String REQUIRED_PROPERTY = "required";
     private static final String ALLOWED_MODES_PROPERTY = "allowedModes";
     private static final String FAIL_ON_POLICY_OVERRIDE_PROPERTY = "failOnPolicyOverride";
 
@@ -50,6 +51,7 @@ public class JsonAppSettings implements AppSettings, AppSettingsRegistry {
     private final String resourceName;
     private final List<String> profiles;
     private final boolean registrationEnabled;
+    private final boolean registrationRequired;
     private final Set<SettingsRegistrationMode> allowedModes;
     private final boolean failOnPolicyOverride;
 
@@ -70,6 +72,7 @@ public class JsonAppSettings implements AppSettings, AppSettingsRegistry {
 
         RegistryPolicy policy = readRegistryPolicy(root);
         this.registrationEnabled = policy.enabled();
+        this.registrationRequired = policy.required();
         this.allowedModes = policy.allowedModes();
         this.failOnPolicyOverride = policy.failOnPolicyOverride();
     }
@@ -160,7 +163,13 @@ public class JsonAppSettings implements AppSettings, AppSettingsRegistry {
     }
 
     private ObjectNode loadExternalResources(ResourceProvider provider, String sourceDescription) {
-        ObjectNode settings = loadExternalResource(provider, DEFAULT_RESOURCE_NAME, true, sourceDescription);
+        ObjectNode settings = loadExternalResource(
+                provider,
+                DEFAULT_RESOURCE_NAME,
+                registrationRequired,
+                sourceDescription
+        );
+        if (settings == null) settings = JsonNodeFactory.instance.objectNode();
         for (String profile : profiles) {
             String profileName = profileResourceName(DEFAULT_RESOURCE_NAME, profile);
             ObjectNode profileSettings = loadExternalResource(provider, profileName, false, sourceDescription);
@@ -257,9 +266,10 @@ public class JsonAppSettings implements AppSettings, AppSettingsRegistry {
         }
 
         boolean enabled = booleanOrDefault(policy.get(ENABLED_PROPERTY), true);
+        boolean required = booleanOrDefault(policy.get(REQUIRED_PROPERTY), true);
         boolean failOnOverride = booleanOrDefault(policy.get(FAIL_ON_POLICY_OVERRIDE_PROPERTY), true);
         Set<SettingsRegistrationMode> modes = readAllowedModes(policy.get(ALLOWED_MODES_PROPERTY));
-        return new RegistryPolicy(enabled, modes, failOnOverride);
+        return new RegistryPolicy(enabled, required, modes, failOnOverride);
     }
 
     private Set<SettingsRegistrationMode> readAllowedModes(JsonNode configuredModes) {
@@ -457,11 +467,12 @@ public class JsonAppSettings implements AppSettings, AppSettingsRegistry {
 
     private record RegistryPolicy(
             boolean enabled,
+            boolean required,
             Set<SettingsRegistrationMode> allowedModes,
             boolean failOnPolicyOverride
     ) {
         private static RegistryPolicy defaults() {
-            return new RegistryPolicy(true, Set.of(SettingsRegistrationMode.KEEP), true);
+            return new RegistryPolicy(true, true, Set.of(SettingsRegistrationMode.KEEP), true);
         }
     }
 }

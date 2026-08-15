@@ -384,6 +384,7 @@ O registry externo usa `KEEP` por default. A política default é:
 {
   "settingsRegistry": {
     "enabled": true,
+    "required": true,
     "allowedModes": ["KEEP"],
     "failOnPolicyOverride": true
   }
@@ -391,8 +392,11 @@ O registry externo usa `KEEP` por default. A política default é:
 ```
 
 `String` e `Path` representam um documento. `Class` e `ClassLoader` exigem um
-`settings.json` base e carregam profiles opcionais. Falha de parse/leitura ou tentativa
-proibida não altera o estado anterior, conforme os testes do registry.
+`settings.json` base quando `settingsRegistry.required` é `true` (o default) e carregam
+profiles opcionais. Com `required: false`, a ausência do base é ignorada e profiles
+disponíveis ainda são carregados; se nenhum recurso existir, o registro não altera o
+estado. Falha de parse/leitura ou tentativa proibida não altera o estado anterior,
+conforme os testes do registry.
 
 ## Assíncrono, eventos e scheduler
 
