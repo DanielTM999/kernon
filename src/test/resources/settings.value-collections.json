@@ -1,0 +1,11 @@
+{
+  "app": {
+    "servers": [
+      { "host": "alpha", "port": 8080 },
+      { "host": "beta", "port": 9090 }
+    ],
+    "tags": ["b", "a", "b"],
+    "limits": { "read": 10, "write": 20 },
+    "single": { "host": "gamma", "port": 7070 }
+  }
+}

@@ -9,6 +9,7 @@ import dtm.di.common.reflection.ReflectionCache;
 import dtm.di.event.impl.DefaultEventPublisher;
 import dtm.di.event.EventPublisher;
 import dtm.di.settings.AppSettings;
+import dtm.di.settings.ContainerDefaults;
 import dtm.di.settings.JsonAppSettings;
 import dtm.di.annotations.settings.Value;
 import dtm.di.core.ClassFinderDependencyContainer;
@@ -3109,8 +3110,13 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private Object resolveValue(Value value, Class<?> type, Type genericType, AppSettings settings) {
-        String key = value.key();
-        String def = value.defaultValue();
+        return resolveValue(value.key(), value.defaultValue(), type, genericType, settings);
+    }
+
+    private Object resolveValue(String key, String def, Class<?> type, Type genericType, AppSettings settings) {
+        if(type == Optional.class){
+            return resolveOptionalValue(key, def, genericType, settings);
+        }
 
         if(type == String.class){
             return settings.getString(key, def);
@@ -3137,12 +3143,34 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             return (byte) settings.getInt(key, parseInt(def, 0));
         }
 
-        if (genericType instanceof ParameterizedType
-                && (Collection.class.isAssignableFrom(type) || Map.class.isAssignableFrom(type))) {
-            return settings.getObject(key, genericType);
+        if (ContainerDefaults.isContainer(type)) {
+            return resolveContainerValue(key, type, genericType, settings);
         }
 
         return settings.getObject(key, type);
+    }
+
+    private Object resolveOptionalValue(String key, String def, Type genericType, AppSettings settings) {
+        Type innerType = ContainerDefaults.firstTypeArgument(genericType);
+        Class<?> innerRaw = ContainerDefaults.rawClass(innerType);
+        if(innerRaw == null) innerRaw = Object.class;
+
+        boolean hasDefault = def != null && !def.isEmpty();
+        if(!settings.has(key) && !hasDefault){
+            return Optional.empty();
+        }
+
+        return Optional.ofNullable(resolveValue(key, def, innerRaw, innerType, settings));
+    }
+
+    private Object resolveContainerValue(String key, Class<?> type, Type genericType, AppSettings settings) {
+        if(settings.has(key)){
+            Object resolved = (genericType instanceof ParameterizedType || type.isArray())
+                    ? settings.getObject(key, genericType)
+                    : settings.getObject(key, type);
+            if(resolved != null && type.isInstance(resolved)) return resolved;
+        }
+        return ContainerDefaults.newEmpty(type);
     }
 
     private static int parseInt(String s, int fallback){

@@ -12,7 +12,6 @@ import tools.jackson.databind.node.ObjectNode;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Constructor;
-import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -439,8 +438,12 @@ public class JsonAppSettings implements AppSettings, AppSettingsRegistry {
         }
     }
 
+    @SuppressWarnings("unchecked")
     private <T> T defaultInstance(Class<T> type) {
         if (type == null) return null;
+        if (ContainerDefaults.isContainer(type)) {
+            return (T) ContainerDefaults.newEmpty(type);
+        }
         try {
             Constructor<T> constructor = type.getDeclaredConstructor();
             if (!constructor.canAccess(null)) constructor.setAccessible(true);
@@ -452,12 +455,7 @@ public class JsonAppSettings implements AppSettings, AppSettingsRegistry {
     }
 
     private Class<?> rawClass(Type type) {
-        if (type instanceof Class<?> clazz) return clazz;
-        if (type instanceof ParameterizedType parameterizedType
-                && parameterizedType.getRawType() instanceof Class<?> clazz) {
-            return clazz;
-        }
-        return null;
+        return ContainerDefaults.rawClass(type);
     }
 
     @FunctionalInterface

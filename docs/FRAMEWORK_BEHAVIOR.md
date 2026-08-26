@@ -374,8 +374,14 @@ O `JsonAppSettings` padrão carrega `settings.json` do classpath. Depois aplica
 - `getString/getInt/getLong/getDouble/getBoolean`: usa o default em ausência/valor
   incompatível conforme a conversão;
 - `getObject`: tenta desserializar; em ausência/erro, tenta construtor default e pode
-  retornar `null`;
+  retornar `null`. Para coleções, mapas e arrays devolve um container vazio;
 - `@Value` não precisa de `@Inject`;
+- `@Value` em coleção/mapa/array preserva o tipo genérico declarado (`List<MyClass>`
+  desserializa os elementos como `MyClass`). Tipo concreto (`ArrayList`, `TreeSet`,
+  `LinkedList`) é instanciado como tal; interface (`List`, `Set`, `Map`, `Queue`) usa a
+  implementação default. Chave ausente vira container vazio, nunca `null`;
+- `@Value` em `Optional<T>` devolve `Optional.empty()` quando a chave não existe e não há
+  `defaultValue`; caso contrário resolve `T` normalmente e embrulha em `Optional`;
 - registro posterior via `AppSettingsRegistry` não reinjeta campos `@Value` existentes.
 
 O registry externo usa `KEEP` por default. A política default é:
