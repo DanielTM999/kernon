@@ -8,7 +8,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Function;
@@ -30,6 +33,8 @@ public final class ReflectionCache {
     }
 
     private static final ConcurrentMap<Class<?>, ClassMetadata> CACHE = new ConcurrentHashMap<>();
+    private static final ConcurrentMap<Method, ConcurrentMap<Class<? extends Annotation>, Optional<? extends Annotation>>>
+            METHOD_META_ANNOTATIONS = new ConcurrentHashMap<>();
 
     public static List<Field> fields(Class<?> clazz) {
         return metadata(clazz).fields;
@@ -91,11 +96,98 @@ public final class ReflectionCache {
         });
     }
 
+    public static <A extends Annotation> A metaAnnotation(Class<?> clazz, Class<A> annotation) {
+        Optional<? extends Annotation> cached = metadata(clazz).metaAnnotations
+                .computeIfAbsent(annotation, target -> Optional.ofNullable(resolveMetaAnnotation(clazz, target)));
+
+        return (A) cached.orElse(null);
+    }
+
+    public static boolean hasMetaAnnotation(Class<?> clazz, Class<? extends Annotation> annotation) {
+        return metaAnnotation(clazz, annotation) != null;
+    }
+
+    public static <A extends Annotation> A metaAnnotation(Method method, Class<A> annotation) {
+        Optional<? extends Annotation> cached = METHOD_META_ANNOTATIONS
+                .computeIfAbsent(method, target -> new ConcurrentHashMap<>())
+                .computeIfAbsent(annotation, target -> Optional.ofNullable(resolveMetaAnnotation(method, target)));
+
+        return (A) cached.orElse(null);
+    }
+
+    public static boolean hasMetaAnnotation(Method method, Class<? extends Annotation> annotation) {
+        return metaAnnotation(method, annotation) != null;
+    }
+
+    private static <A extends Annotation> A resolveMetaAnnotation(Method method, Class<A> annotation) {
+        if (method.isAnnotationPresent(annotation)) {
+            return method.getAnnotation(annotation);
+        }
+
+        Set<Class<? extends Annotation>> visited = new HashSet<>();
+        for (Annotation declared : method.getAnnotations()) {
+            A found = searchMetaAnnotation(declared.annotationType(), annotation, visited);
+            if (found != null) {
+                return found;
+            }
+        }
+
+        return null;
+    }
+
+    private static <A extends Annotation> A resolveMetaAnnotation(Class<?> clazz, Class<A> annotation) {
+        if (clazz.isAnnotationPresent(annotation)) {
+            return clazz.getAnnotation(annotation);
+        }
+
+        Set<Class<? extends Annotation>> visited = new HashSet<>();
+        for (Annotation declared : clazz.getAnnotations()) {
+            A found = searchMetaAnnotation(declared.annotationType(), annotation, visited);
+            if (found != null) {
+                return found;
+            }
+        }
+
+        return null;
+    }
+
+    private static <A extends Annotation> A searchMetaAnnotation(
+            Class<? extends Annotation> current,
+            Class<A> annotation,
+            Set<Class<? extends Annotation>> visited
+    ) {
+        if (current.equals(annotation)) {
+            return null;
+        }
+
+        if (!visited.add(current)) {
+            return null;
+        }
+
+        if (current.getName().startsWith("java.lang.annotation")) {
+            return null;
+        }
+
+        if (current.isAnnotationPresent(annotation)) {
+            return current.getAnnotation(annotation);
+        }
+
+        for (Annotation meta : current.getAnnotations()) {
+            A found = searchMetaAnnotation(meta.annotationType(), annotation, visited);
+            if (found != null) {
+                return found;
+            }
+        }
+
+        return null;
+    }
+
     /**
      * Limpa todo o cache. Útil em testes ou hot-reload.
      */
     public static void clear() {
         CACHE.clear();
+        METHOD_META_ANNOTATIONS.clear();
     }
 
     public static void clear(Class<?> clazz) {
@@ -126,6 +218,7 @@ public final class ReflectionCache {
         final Lazy<List<Method>> methodsHierarchy;
         final ConcurrentMap<Class<? extends Annotation>, List<Field>> fieldsByAnnotation = new ConcurrentHashMap<>();
         final ConcurrentMap<Class<? extends Annotation>, List<Method>> methodsByAnnotation = new ConcurrentHashMap<>();
+        final ConcurrentMap<Class<? extends Annotation>, Optional<? extends Annotation>> metaAnnotations = new ConcurrentHashMap<>();
 
         ClassMetadata(Class<?> clazz) {
             this.fields = Collections.unmodifiableList(Arrays.asList(clazz.getDeclaredFields()));

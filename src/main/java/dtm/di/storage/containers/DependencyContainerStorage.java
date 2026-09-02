@@ -50,6 +50,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -90,7 +91,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private final ReentrantLock externalLock;
     private final AtomicLong externalRegistrationSequence;
 
-    private final int thresholdConcurent = 50;
+    private static final int DEPENDENCY_GRAPH_PARALLEL_THRESHOLD = 16;
+    private static final int CLASS_SCAN_PARALLEL_THRESHOLD = 32;
 
     private final Class<?> mainClass;
     private final List<String> profiles;
@@ -238,8 +240,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             loadByPluginFolder();
             loadSystemClasses();
             injectExternalModules();
-            filterServiceClass();
-            filterExternalsBeens();
+            SystemClassification classification = classifySystemClasses();
+            filterServiceClass(classification);
+            filterExternalsBeens(classification);
             selfInjection();
             loaded.set(true);
             registerExternalBeens(externalBeenBefore, null, null);
@@ -256,7 +259,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     @Override
     public void loadExternal(Collection<Class<?>> classes) throws InvalidClassRegistrationException {
-        final Set<Class<?>> normalized = normalizeExternalClasses(classes);
+        final Set<Class<?>> normalized = expandExternalImports(normalizeExternalClasses(classes));
         throwIfUnload();
 
         if(normalized.isEmpty()) return;
@@ -816,6 +819,25 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         return normalized;
     }
 
+    private Set<Class<?>> expandExternalImports(Set<Class<?>> classes){
+        Set<Class<?>> expanded = new LinkedHashSet<>();
+        for(Class<?> clazz : classes){
+            collectImportedClasses(clazz, expanded);
+        }
+        return expanded;
+    }
+
+    private void collectImportedClasses(Class<?> clazz, Set<Class<?>> expanded){
+        if(!expanded.add(clazz)) return;
+
+        Import importAnnotation = AnnotationsUtils.getMetaAnnotation(clazz, Import.class);
+        if(importAnnotation == null) return;
+
+        for(Class<?> importedClass : importAnnotation.value()){
+            collectImportedClasses(importedClass, expanded);
+        }
+    }
+
     private void loadExternalClasses(Set<Class<?>> classes) throws InvalidClassRegistrationException{
         final Set<Class<?>> candidates = new LinkedHashSet<>();
         for(Class<?> clazz : classes){
@@ -831,8 +853,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
         if(componentClasses.isEmpty() && configurationClasses.isEmpty()) return;
 
-        final Set<Class<?>> knownExternalTypes = new LinkedHashSet<>(componentClasses);
-        knownExternalTypes.addAll(externalComponentRegistrations.keySet());
+        final Set<Class<?>> externalTypes = new LinkedHashSet<>(componentClasses);
+        externalTypes.addAll(externalComponentRegistrations.keySet());
+        final ServiceIndex knownExternalTypes = new ServiceIndex(externalTypes);
 
         final ExternalLoadBatch batch = new ExternalLoadBatch(externalRegistrationSequence);
 
@@ -1083,7 +1106,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private ExternalComponentRegistration externalRegistrationFor(
             ExternalLoadBatch batch,
             Class<?> ownerClass,
-            Set<Class<?>> knownExternalTypes
+            ServiceIndex knownExternalTypes
     ){
         if(batch == null) return null;
 
@@ -1093,7 +1116,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         return registration;
     }
 
-    private Set<Class<?>> resolveExternalDependencies(Class<?> clazz, Set<Class<?>> knownExternalTypes){
+    private Set<Class<?>> resolveExternalDependencies(Class<?> clazz, ServiceIndex knownExternalTypes){
         if(knownExternalTypes == null || knownExternalTypes.isEmpty()) return Set.of();
 
         Set<Class<?>> dependencies = new LinkedHashSet<>();
@@ -1107,7 +1130,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         return dependencies;
     }
 
-    private Set<Class<?>> resolveExternalMethodDependencies(List<Method> methods, Set<Class<?>> knownExternalTypes){
+    private Set<Class<?>> resolveExternalMethodDependencies(List<Method> methods, ServiceIndex knownExternalTypes){
         if(knownExternalTypes == null || knownExternalTypes.isEmpty()) return Set.of();
 
         Set<Class<?>> dependencies = new LinkedHashSet<>();
@@ -1122,11 +1145,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 }
 
                 if(type.isInterface() || Modifier.isAbstract(type.getModifiers())){
-                    for(Class<?> candidate : knownExternalTypes){
-                        if(type.isAssignableFrom(candidate)){
-                            dependencies.add(candidate);
-                        }
-                    }
+                    dependencies.addAll(knownExternalTypes.implementationsOf(type));
                 }
             }
         }
@@ -1262,7 +1281,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private void loadBeensInlayer(
             List<Set<ServiceBean>> layers,
             ExternalLoadBatch batch,
-            Set<Class<?>> knownExternalTypes
+            ServiceIndex knownExternalTypes
     ) throws InvalidClassRegistrationException{
         for (Set<ServiceBean> layer : layers) {
             loadBeensInlayer(layer, batch, knownExternalTypes);
@@ -1272,8 +1291,19 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private void loadBeensInlayer(
             Set<ServiceBean> layer,
             ExternalLoadBatch batch,
-            Set<Class<?>> knownExternalTypes
+            ServiceIndex knownExternalTypes
     ) throws InvalidClassRegistrationException{
+        if(layer.size() == 1){
+            ServiceBean single = layer.iterator().next();
+            loadBeen(
+                    single,
+                    new HashSet<>(),
+                    getQualifierName(single.getClazz()),
+                    externalRegistrationFor(batch, single.getClazz(), knownExternalTypes)
+            );
+            return;
+        }
+
         List<CompletableFuture<?>> tasks = new ArrayList<>();
         for (ServiceBean serviceBean : layer) {
             final ExternalComponentRegistration registration = externalRegistrationFor(
@@ -1476,9 +1506,50 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
     }
 
-    private void filterServiceClass(){
-        final Set<Class<?>> serviceLoadedClassActive = getConcreteServiceLoadedClass(Component.class);
-        serviceLoadedClassActive.addAll(getConcreteServiceLoadedClass(Aspect.class));
+    private record SystemClassification(
+            Set<Class<?>> activeComponents,
+            Set<Class<?>> activeAspects,
+            Set<Class<?>> activeConfigurations,
+            Set<Class<?>> allComponents
+    ){}
+
+    private SystemClassification classifySystemClasses(){
+        final Set<Class<?>> activeComponents = ConcurrentHashMap.newKeySet();
+        final Set<Class<?>> activeAspects = ConcurrentHashMap.newKeySet();
+        final Set<Class<?>> activeConfigurations = ConcurrentHashMap.newKeySet();
+        final Set<Class<?>> allComponents = ConcurrentHashMap.newKeySet();
+
+        forEachClass(loadedSystemClasses, CLASS_SCAN_PARALLEL_THRESHOLD, clazz -> {
+            if(!isConcreteClass(clazz)) return;
+
+            boolean component = hasMetaAnnotation(clazz, Component.class);
+
+            if(component){
+                allComponents.add(clazz);
+            }
+
+            if(!isProfileActive(clazz)) return;
+
+            if(component){
+                activeComponents.add(clazz);
+            }
+
+            if(hasMetaAnnotation(clazz, Aspect.class)){
+                activeAspects.add(clazz);
+            }
+
+            if(hasMetaAnnotation(clazz, Configuration.class)){
+                activeConfigurations.add(clazz);
+            }
+        });
+
+        return new SystemClassification(activeComponents, activeAspects, activeConfigurations, allComponents);
+    }
+
+    private void filterServiceClass(SystemClassification classification){
+        final Set<Class<?>> serviceLoadedClassActive = ConcurrentHashMap.newKeySet();
+        serviceLoadedClassActive.addAll(classification.activeComponents());
+        serviceLoadedClassActive.addAll(classification.activeAspects());
 
         final Map<Class<?>, Set<Class<?>>> dependencyGraph = buildDependencyGraph(serviceLoadedClassActive);
 
@@ -1498,11 +1569,11 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
         if(serviceClasses.isEmpty()) return dependencyGraph;
 
-        if (serviceClasses.size() < thresholdConcurent) {
-            processDependencyServiceWithParallelStream(dependencyGraph, serviceClasses);
-        } else {
-            processDependencyServiceWithExecutorService(dependencyGraph, serviceClasses);
-        }
+        final ServiceIndex index = new ServiceIndex(serviceClasses);
+
+        forEachClass(serviceClasses, DEPENDENCY_GRAPH_PARALLEL_THRESHOLD, clazz ->
+                dependencyGraph.put(clazz, getDependecyClassListOfClass(clazz, index))
+        );
 
         return dependencyGraph;
     }
@@ -1523,9 +1594,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             int layerOrder = order;
             Set<ServiceBean> layer = ConcurrentHashMap.newKeySet();
 
-            classSet.parallelStream().forEach(clazz -> {
-                layer.add(new ServiceBean(clazz, layerOrder, isAopEnabled(clazz)));
-            });
+            forEachClass(classSet, DEPENDENCY_GRAPH_PARALLEL_THRESHOLD, clazz ->
+                    layer.add(new ServiceBean(clazz, layerOrder, isAopEnabled(clazz)))
+            );
 
             layers.add(layer);
             order++;
@@ -1536,7 +1607,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private void loadByPluginFolder(){
         for (String forderPath : foldersToLoad){
-            classFinder.loadByDirectory(forderPath);
+            loadedSystemClasses.addAll(classFinder.loadByDirectory(forderPath));
         }
     }
 
@@ -1618,59 +1689,32 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         return clazz.isAnnotationPresent(Singleton.class);
     }
 
-    private Set<Class<?>> getConcreteServiceLoadedClass(Class<? extends Annotation> annotation){
-        return getConcreteServiceLoadedClass(annotation, true);
-    }
+    private static <T> void forEachClass(Collection<T> items, int parallelThreshold, Consumer<T> action){
+        final int total = items.size();
 
-    private Set<Class<?>> getConcreteServiceLoadedClass(Class<? extends Annotation> annotation, boolean onlyActive){
-        final int threshold = 350;
-        final int total = loadedSystemClasses.size();
+        if(total == 0) return;
 
-        Predicate<Class<?>> filterConcrete = c -> (onlyActive) ? filterConcreteBeanAndActive(c, annotation) : filterConcreteBean(c, annotation);
-
-        if (total < threshold) {
-            return loadedSystemClasses.stream()
-                    .parallel()
-                    .filter(filterConcrete)
-                    .collect(Collectors.toSet());
-        }else{
-            final List<CompletableFuture<?>> futures = new ArrayList<>();
-            final Set<Class<?>> result = ConcurrentHashMap.newKeySet();
-            try{
-                List<Class<?>> classList = new ArrayList<>(loadedSystemClasses);
-
-                for(Class<?> clazz : classList){
-                    futures.add(CompletableFuture.runAsync(() -> {
-                        if(filterConcrete.test(clazz)){
-                            result.add(clazz);
-                        }
-                    }, mainVirtualExecutor));
-                }
-
-                CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-            } catch (CompletionException e) {
-                throw new DependencyContainerException("erro ao caregar dependencias", e.getCause());
+        if(total < parallelThreshold){
+            for(T item : items){
+                action.accept(item);
             }
-
-            return result;
+            return;
         }
-    }
 
-    private void processDependencyServiceWithParallelStream(Map<Class<?>, Set<Class<?>>> dependencyGraph, Set<Class<?>> serviceLoadedClass) {
-        serviceLoadedClass.parallelStream()
-                .forEach(clazz -> {
-                    Set<Class<?>> dependencies = getDependecyClassListOfClass(clazz, serviceLoadedClass);
-                    dependencyGraph.put(clazz, dependencies);
-                });
+        items.parallelStream().forEach(action);
     }
 
     private Set<Class<?>> getDependecyClassListOfClass(Class<?> clazz, Set<Class<?>> serviceLoadedClass) {
+        return getDependecyClassListOfClass(clazz, new ServiceIndex(serviceLoadedClass));
+    }
+
+    private Set<Class<?>> getDependecyClassListOfClass(Class<?> clazz, ServiceIndex serviceIndex) {
         Set<Class<?>> dependencies = new HashSet<>();
 
         for (Field field : ReflectionCache.fields(clazz)) {
             if (field.isAnnotationPresent(Inject.class)) {
                 Class<?> fieldType = field.getType();
-                dependencies.addAll(isServiceDependency(fieldType, serviceLoadedClass, field));
+                dependencies.addAll(isServiceDependency(fieldType, serviceIndex, field));
             }
         }
 
@@ -1679,72 +1723,88 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 if (param.isAnnotationPresent(Value.class)) {
                     continue;
                 }
-                dependencies.addAll(isServiceDependency(param.getType(), serviceLoadedClass, param));
+                dependencies.addAll(isServiceDependency(param.getType(), serviceIndex, param));
             }
         }
 
         return dependencies;
     }
 
-    private Set<Class<?>> isServiceDependency(Class<?> type, Set<Class<?>> serviceLoadedClass, Object extra) {
+    private Set<Class<?>> isServiceDependency(Class<?> type, ServiceIndex serviceIndex, Object extra) {
+        if(!type.isInterface() && !Modifier.isAbstract(type.getModifiers())){
+            return Set.of(type);
+        }
+
+        List<Class<?>> candidates = serviceIndex.implementationsOf(type);
+
+        if(candidates.isEmpty()) return Set.of();
+
+        String qualifierElement = "default";
+        if(extra instanceof Field field){
+            qualifierElement = getQualifierName(field);
+        }else if(extra instanceof Parameter parameter){
+            qualifierElement = getQualifierName(parameter);
+        }
+
         Set<Class<?>> dependencies = new HashSet<>();
-
-        if(type.isInterface() || Modifier.isAbstract(type.getModifiers())){
-            for (Class<?> serviceClass : serviceLoadedClass) {
-                if (type.isAssignableFrom(serviceClass) && !serviceClass.isInterface() && !Modifier.isAbstract(serviceClass.getModifiers())) {
-                    String serviceQualifier = getQualifierName(serviceClass);
-                    String qualifierElement = "default";
-                    if(extra instanceof Field field){
-                        qualifierElement = getQualifierName(field);
-                    }else if(extra instanceof Parameter parameter){
-                        qualifierElement = getQualifierName(parameter);
-                    }
-                    if (serviceQualifier.equalsIgnoreCase(qualifierElement)){
-                        dependencies.add(serviceClass);
-                    }
-
-                }
+        for (Class<?> serviceClass : candidates) {
+            if (serviceIndex.qualifierOf(serviceClass).equalsIgnoreCase(qualifierElement)) {
+                dependencies.add(serviceClass);
             }
-        }else{
-            dependencies.add(type);
         }
 
         return dependencies;
     }
 
-    private void processDependencyServiceWithExecutorService(Map<Class<?>, Set<Class<?>>> dependencyGraph, Set<Class<?>> serviceLoadedClass) {
-        try{
-            List<CompletableFuture<Void>> futures = new ArrayList<>();
+    private final class ServiceIndex {
 
-            for(Class<?> serviceClass : serviceLoadedClass){
-                futures.add(CompletableFuture.runAsync(() -> {
-                    if(!serviceClass.isInterface() && !Modifier.isAbstract(serviceClass.getModifiers())){
-                        Set<Class<?>> dependencies = getDependecyClassListOfClass(serviceClass, serviceLoadedClass);
-                        dependencyGraph.put(serviceClass, dependencies);
-                    }
-                }, mainExecutor));
-            }
+        private final Set<Class<?>> members;
+        private final Map<Class<?>, List<Class<?>>> implementationsByType;
+        private final Map<Class<?>, String> qualifierByClass;
 
-            try {
-                CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).get();
-            } catch (ExecutionException e) {
-                throw new DependencyContainerRuntimeException("Erro ao processar uma classe", e.getCause());
-            }
-        }catch (InterruptedException e){
-            Thread.currentThread().interrupt();
-            throw new DependencyContainerRuntimeException("Execução interrompida", e);
+        private ServiceIndex(Set<Class<?>> serviceClasses){
+            this.members = serviceClasses;
+            this.implementationsByType = new ConcurrentHashMap<>();
+            this.qualifierByClass = new ConcurrentHashMap<>();
         }
 
+        private List<Class<?>> implementationsOf(Class<?> type){
+            return implementationsByType.computeIfAbsent(type, target -> {
+                List<Class<?>> found = new ArrayList<>();
+
+                for(Class<?> candidate : members){
+                    if(candidate.isInterface() || Modifier.isAbstract(candidate.getModifiers())) continue;
+                    if(target.isAssignableFrom(candidate)){
+                        found.add(candidate);
+                    }
+                }
+
+                return found;
+            });
+        }
+
+        private String qualifierOf(Class<?> serviceClass){
+            return qualifierByClass.computeIfAbsent(serviceClass, DependencyContainerStorage.this::getQualifierName);
+        }
+
+        private boolean isEmpty(){
+            return members.isEmpty();
+        }
+
+        private boolean contains(Class<?> type){
+            return members.contains(type);
+        }
     }
 
-    private void filterExternalsBeens() throws InvalidClassRegistrationException{
-        Set<Class<?>> configClasses = getConcreteServiceLoadedClass(Configuration.class);
+
+    private void filterExternalsBeens(SystemClassification classification) throws InvalidClassRegistrationException{
+        Set<Class<?>> configClasses = classification.activeConfigurations();
 
         if (configClasses.isEmpty()) {
             return;
         }
 
-        Set<Class<?>> serviceClasses = getConcreteServiceLoadedClass(Component.class, false);
+        Set<Class<?>> serviceClasses = classification.allComponents();
         ConfigurationBeans configurationBeans = resolveConfigurationBeans(configClasses, serviceClasses);
 
         this.externalBeenBefore.clear();
@@ -1781,7 +1841,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private void registerExternalBeens(
             Map<Class<?>, List<Method>> configurationsClasses,
             ExternalLoadBatch batch,
-            Set<Class<?>> knownExternalTypes
+            ServiceIndex knownExternalTypes
     ) throws InvalidClassRegistrationException{
         for(Map.Entry<Class<?>, List<Method>> configurationsClass : configurationsClasses.entrySet()){
             final Class<?> clazz = configurationsClass.getKey();
@@ -2397,8 +2457,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         try {
             final Class<?> clazz = dependency.getClass();
             if(!isProfileActive(clazz)) return;
-            final Object toRegistrate = isAopEnabled(clazz) ? proxyObject(dependency, clazz) : dependency;
             if(dependencyContainer.containsKey(clazz)) return;
+            final Object toRegistrate = isAopEnabled(clazz) ? proxyObject(dependency, clazz) : dependency;
             final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(clazz, qualifier);
             DependencyObject dependencyObject = new DependencyObject(clazz, qualifier, true, () -> {return toRegistrate;}, toRegistrate);
 
@@ -2430,8 +2490,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         try {
             final Class<?> clazz = dependency.getClass();
             if(!isProfileActive(clazz)) return;
-            final Object toRegistrate = aop ? proxyObject(dependency, clazz) : dependency;
             if(dependencyContainer.containsKey(clazz)) return;
+            final Object toRegistrate = aop ? proxyObject(dependency, clazz) : dependency;
             final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(clazz, qualifier);
             DependencyObject dependencyObject = new DependencyObject(clazz, qualifier, true, () -> {return toRegistrate;}, toRegistrate);
             registerInContainer(
@@ -2638,7 +2698,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private Map<String, Dependency> getDependencyMap(Class<?> referenceClass) {
-        return dependencyContainer.computeIfAbsent(referenceClass, k -> new ConcurrentHashMap<>());
+        Map<String, Dependency> mapOfDependency = dependencyContainer.get(referenceClass);
+        return (mapOfDependency != null) ? mapOfDependency : Map.of();
     }
 
     private String asyncRegistrationKey(Class<?> referenceClass, String qualifier){
@@ -2730,17 +2791,6 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private void loadSystemClasses(){
-        this.classFinderConfigurations = new ClassFinderConfigurations() {};
-        this.classFinderConfigurations.getIgnoreJarsTerms().addAll(
-                List.of(
-                    "lombok", "byte-buddy", "logback-classic", "slf4j-api", "classfinder"
-                )
-        );
-        this.classFinderConfigurations.getIgnorePackges().addAll(
-                List.of(
-                    "net.bytebuddy", "ch.qos.logback", "lombok"
-                )
-        );
         if(mainClass != null){
             loadedSystemClasses.addAll(classFinder.find(mainClass, classFinderConfigurations));
         }else{
@@ -2749,20 +2799,19 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private void injectExternalModules(){
-        List<CompletableFuture<Void>> futures = new ArrayList<>();
         Set<Class<?>> discoveredClasses = ConcurrentHashMap.newKeySet();
-        for (Class<?> clazz : loadedSystemClasses){
-            CompletableFuture<Void> task = CompletableFuture.runAsync(() -> {
-                scanRecursive(clazz, new HashSet<>(), discoveredClasses);
-            }, mainExecutor);
-            futures.add(task);
-        }
 
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        forEachClass(loadedSystemClasses, CLASS_SCAN_PARALLEL_THRESHOLD, clazz -> {
+            if(AnnotationsUtils.getMetaAnnotation(clazz, Import.class) == null) return;
+            scanRecursive(clazz, new HashSet<>(), discoveredClasses);
+        });
+
         loadedSystemClasses.addAll(discoveredClasses);
     }
 
     private void scanRecursive(Class<?> clazz, Set<Class<?>> visited, Set<Class<?>> globalResult){
+        if(!visited.add(clazz)) return;
+
         Import importAnnotation = AnnotationsUtils.getMetaAnnotation(clazz, Import.class);
 
         if(importAnnotation != null){
@@ -2775,18 +2824,6 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
         }
 
-    }
-
-    private boolean filterConcreteBean(Class<?> clazz, Class<? extends Annotation> annotation){
-        return hasMetaAnnotation(clazz, annotation) && isConcreteClass(clazz);
-    }
-
-    private boolean filterConcreteBeanAndActive(Class<?> clazz, Class<? extends Annotation> annotation){
-        if (!isConcreteClass(clazz) || !hasMetaAnnotation(clazz, annotation)) {
-            return false;
-        }
-
-        return isProfileActive(clazz);
     }
 
     private boolean isProfileActive(Class<?> clazz){
@@ -2965,11 +3002,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private void injectDependenciesParallel(Object instance, List<Field> listOfRegistration){
         try{
             final List<CompletableFuture<?>> tasks = new ArrayList<>();
-            ExecutorService executorService = (listOfRegistration.size() > 10) ? mainExecutor : mainVirtualExecutor;
             for (Field variable : listOfRegistration) {
                 CompletableFuture<?> task = CompletableFuture.runAsync(() -> {
                     injectVariable(variable, instance);
-                }, executorService);
+                }, mainVirtualExecutor);
                 tasks.add(task);
             }
 
@@ -3068,8 +3104,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
         final Class<?> clazz = instance.getClass();
 
-        List<Field> injectFields = getAllFieldWithAnnotation(clazz, Inject.class);
-        List<Field> valueFields = getAllFieldWithAnnotation(clazz, Value.class);
+        List<Field> injectFields = ReflectionCache.fieldsWithAnnotation(clazz, Inject.class);
+        List<Field> valueFields = ReflectionCache.fieldsWithAnnotation(clazz, Value.class);
 
         List<Field> listOfRegistration;
         if(valueFields.isEmpty()){

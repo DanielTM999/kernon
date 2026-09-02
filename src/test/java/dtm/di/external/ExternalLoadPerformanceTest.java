@@ -5,16 +5,21 @@ import dtm.di.storage.containers.DependencyContainerStorage;
 import dtm.di.testsupport.ContainerFixture;
 import dtm.di.testsupport.ExternalModule;
 import dtm.di.testsupport.PerfFixtures;
+import dtm.di.testsupport.PerfJar;
 import dtm.di.testsupport.Probe;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -22,18 +27,36 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Tag("performance")
 class ExternalLoadPerformanceTest {
 
-    private static final int LAYERS = 5;
-    private static final int PER_LAYER = 40;
-    private static final int CONFIG_BEANS = 20;
-    private static final int TOTAL_SERVICES = LAYERS * PER_LAYER;
     private static final int BATCH_SIZE = 20;
     private static final int REPETITIONS = 5;
     private static final int WARMUP_ROUNDS = 3;
 
+    private static final Profile SMALL = new Profile("poucas classes", 2, 5, 2);
+    private static final Profile MEDIUM = new Profile("medio", 5, 40, 20);
+    private static final Profile MID = new Profile("500 classes", 5, 100, 30);
+    private static final Profile LARGE = new Profile("muitas classes", 10, 120, 40);
+
     private static ExternalModule warmupModule;
-    private static ExternalModule benchmarkModule;
     private static long warmupCompileMillis;
-    private static long benchmarkCompileMillis;
+    private static Map<Profile, ExternalModule> modules;
+    private static Map<Profile, Long> compileMillis;
+    private static Map<Profile, PerfJar> bootJars;
+
+    private record Profile(String name, int layers, int perLayer, int configBeans) {
+
+        int totalServices() {
+            return layers * perLayer;
+        }
+
+        @Override
+        public String toString() {
+            return name + " (" + totalServices() + " componentes)";
+        }
+    }
+
+    private static Stream<Profile> profiles() {
+        return Stream.of(SMALL, MEDIUM, MID, LARGE);
+    }
 
     @BeforeAll
     static void compileModules() {
@@ -41,34 +64,46 @@ class ExternalLoadPerformanceTest {
         warmupModule = ExternalModule.compile("perf-warmup", PerfFixtures.sources(2, 5, 2));
         warmupCompileMillis = millisSince(start);
 
-        start = System.nanoTime();
-        benchmarkModule = ExternalModule.compile("perf-bench", PerfFixtures.sources(LAYERS, PER_LAYER, CONFIG_BEANS));
-        benchmarkCompileMillis = millisSince(start);
+        modules = new LinkedHashMap<>();
+        compileMillis = new LinkedHashMap<>();
+        bootJars = new LinkedHashMap<>();
+
+        profiles().forEach(profile -> {
+            long profileStart = System.nanoTime();
+            Map<String, String> sources = PerfFixtures.sources(profile.layers(), profile.perLayer(), profile.configBeans());
+            ExternalModule module = ExternalModule.compile("perf-" + profile.totalServices(), sources);
+            modules.put(profile, module);
+            compileMillis.put(profile, millisSince(profileStart));
+            bootJars.put(profile, PerfJar.fromClasses("perfboot-" + profile.totalServices(), module.classesDirectory()));
+        });
     }
 
     @AfterAll
     static void closeModules() {
         warmupModule.close();
-        benchmarkModule.close();
+        modules.values().forEach(ExternalModule::close);
+        bootJars.values().forEach(PerfJar::close);
     }
 
-    @Test
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("profiles")
     @DisplayName("relatorio de performance: boot + registro de classes externas")
-    void performanceReport() throws Exception {
+    void performanceReport(Profile profile) throws Exception {
         warmup();
 
-        List<Class<?>> services = load(benchmarkModule, PerfFixtures.serviceNames(LAYERS, PER_LAYER));
+        ExternalModule module = modules.get(profile);
+        List<Class<?>> services = load(module, PerfFixtures.serviceNames(profile.layers(), profile.perLayer()));
         List<Class<?>> everything = new ArrayList<>(services);
-        everything.add(benchmarkModule.load(PerfFixtures.CONFIGURATION));
+        everything.add(module.load(PerfFixtures.CONFIGURATION));
 
-        Sample boot = measureBoot();
+        Sample boot = measureBoot(bootJars.get(profile));
         Sample singleBatch = measureSingleBatch(everything, false);
         Sample singleBatchAop = measureSingleBatch(everything, true);
         Sample incremental = measureIncrementalBatches(everything);
         Sample unloadAll = measureUnloadAll(everything);
         Sample cycle = measureCycles(everything);
 
-        report(everything.size(), boot, singleBatch, singleBatchAop, incremental, unloadAll, cycle);
+        report(profile, everything.size(), boot, singleBatch, singleBatchAop, incremental, unloadAll, cycle);
 
         assertTrue(singleBatch.median() < 30_000, "carga externa de " + everything.size() + " classes ficou absurdamente lenta");
         assertTrue(unloadAll.median() < 30_000, "descarga externa ficou absurdamente lenta");
@@ -91,12 +126,14 @@ class ExternalLoadPerformanceTest {
         Probe.reset();
     }
 
-    private Sample measureBoot() throws Exception {
+    private Sample measureBoot(PerfJar bootJar) throws Exception {
         Sample sample = new Sample("boot: load() do container principal");
 
         for (int repetition = 0; repetition < REPETITIONS; repetition++) {
             DependencyContainerStorage container = ContainerFixture.newContainer("test");
             try {
+                container.loadDirectory(bootJar.folder());
+
                 long start = System.nanoTime();
                 container.load();
                 sample.add(millisSince(start));
@@ -218,19 +255,20 @@ class ExternalLoadPerformanceTest {
         return classes;
     }
 
-    private void report(int totalClasses, Sample... samples) {
+    private void report(Profile profile, int totalClasses, Sample... samples) {
         StringBuilder report = new StringBuilder();
 
         report.append(System.lineSeparator())
-                .append("=== Kernon | boot + carregamento externo ===").append(System.lineSeparator())
+                .append("=== Kernon | boot + carregamento externo | ").append(profile.name()).append(" ===").append(System.lineSeparator())
                 .append("JVM ......... ").append(System.getProperty("java.vm.name"))
                 .append(" ").append(System.getProperty("java.version")).append(System.lineSeparator())
                 .append("CPUs ........ ").append(Runtime.getRuntime().availableProcessors()).append(System.lineSeparator())
-                .append("Modulo ...... ").append(TOTAL_SERVICES).append(" componentes em ").append(LAYERS)
-                .append(" camadas + 1 @Configuration com ").append(CONFIG_BEANS + 1).append(" beans")
+                .append("Perfil ...... ").append(profile.name()).append(System.lineSeparator())
+                .append("Modulo ...... ").append(profile.totalServices()).append(" componentes em ").append(profile.layers())
+                .append(" camadas + 1 @Configuration com ").append(profile.configBeans() + 1).append(" beans")
                 .append(System.lineSeparator())
                 .append("Compilacao .. warmup ").append(warmupCompileMillis).append(" ms | benchmark ")
-                .append(benchmarkCompileMillis).append(" ms (javac, fora da medicao)").append(System.lineSeparator())
+                .append(compileMillis.get(profile)).append(" ms (javac, fora da medicao)").append(System.lineSeparator())
                 .append("Amostras .... ").append(REPETITIONS).append(" repeticoes apos ").append(WARMUP_ROUNDS)
                 .append(" rodadas de aquecimento").append(System.lineSeparator())
                 .append(System.lineSeparator())

@@ -24,6 +24,10 @@ public final class ExternalFixtures {
     public static final String CONFIG_BEAN = "ext.ConfigBean";
     public static final String COMPONENT_AWARE_BEAN = "ext.ComponentAwareBean";
     public static final String EXTERNAL_CONFIGURATION = "ext.ExternalConfiguration";
+    public static final String IMPORTED_SERVICE = "ext.ImportedService";
+    public static final String IMPORTED_BEAN = "ext.ImportedBean";
+    public static final String NESTED_IMPORTED_CONFIGURATION = "ext.NestedImportedConfiguration";
+    public static final String IMPORTING_CONFIGURATION = "ext.ImportingConfiguration";
     public static final String PROFILED_PRODUCER_CONFIGURATION = "ext.ProfiledProducerConfiguration";
     public static final String ASYNC_PRODUCER_CONFIGURATION = "ext.AsyncProducerConfiguration";
     public static final String FAILING_ASYNC_PRODUCER_CONFIGURATION = "ext.FailingAsyncProducerConfiguration";
@@ -403,6 +407,68 @@ public final class ExternalFixtures {
                         Probe.record("ExternalConfiguration.componentAwareBean");
                         return new ComponentAwareBean("config:" + base.greet());
                     }
+                }
+                """);
+
+        sources.put(IMPORTED_SERVICE, """
+                package ext;
+
+                import dtm.di.annotations.Component;
+                import dtm.di.annotations.Singleton;
+
+                @Singleton
+                @Component
+                public class ImportedService {
+                    public String value() {
+                        return "imported";
+                    }
+                }
+                """);
+
+        sources.put(IMPORTED_BEAN, """
+                package ext;
+
+                public class ImportedBean {
+
+                    private final String value;
+
+                    public ImportedBean(String value) {
+                        this.value = value;
+                    }
+
+                    public String value() {
+                        return value;
+                    }
+                }
+                """);
+
+        sources.put(NESTED_IMPORTED_CONFIGURATION, """
+                package ext;
+
+                import dtm.di.annotations.Component;
+                import dtm.di.annotations.Configuration;
+                import dtm.di.annotations.Import;
+
+                @Configuration
+                @Import(ImportedService.class)
+                public class NestedImportedConfiguration {
+
+                    @Component
+                    public ImportedBean importedBean(ImportedService service) {
+                        return new ImportedBean(service.value());
+                    }
+                }
+                """);
+
+        sources.put(IMPORTING_CONFIGURATION, """
+                package ext;
+
+                import dtm.di.annotations.Configuration;
+                import dtm.di.annotations.Import;
+
+                @Configuration
+                @Import(NestedImportedConfiguration.class)
+                public class ImportingConfiguration {
                 }
                 """);
 

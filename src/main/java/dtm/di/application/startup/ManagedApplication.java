@@ -37,11 +37,14 @@ import java.security.InvalidParameterException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 public class ManagedApplication {
     private static final Logger logger = LoggerFactory.getLogger(ManagedApplication.class);
+    private static final Map<String, Long> lifecyclePhaseStart = new ConcurrentHashMap<>();
+    private static final AtomicLong applicationStartNanos = new AtomicLong();
     private static Method runMethod;
     private static Method throwableMethod;
     private static Class<?> bootableClass;
@@ -56,6 +59,7 @@ public class ManagedApplication {
     private final static AtomicReference<Thread.UncaughtExceptionHandler> uncaughtExceptionHandler = new AtomicReference<>();
     private final static AtomicReference<ExceptionHandlerInvoker> handlerInvoker = new AtomicReference<>();
     private final static AtomicReference<DependencyContainer> dependencyContainerRef = new AtomicReference<>();
+    private final static AtomicReference<BootClassIndex> bootClassIndexRef = new AtomicReference<>();
     private final static AtomicReference<String[]> launchArgsRef = new AtomicReference<>(new String[0]);
     private final static AtomicReference<ExceptionHandlerInvoker> userControllerAdvice = new AtomicReference<>();
     private final static AtomicBoolean controllerAdviceScannerIsLoad = new AtomicBoolean(false);
@@ -79,6 +83,7 @@ public class ManagedApplication {
     }
 
     public static void doRun(boolean log, String[] args, Class<?> mainClass){
+        applicationStartNanos.set(System.nanoTime());
         launchArgsRef.set(args);
         uncaughtExceptionHandler.set(Thread.getDefaultUncaughtExceptionHandler());
         handlerInvoker.set(getDefaultExceptionHandlerInvoker());
@@ -301,10 +306,43 @@ public class ManagedApplication {
         return sortedMap;
     }
 
+    private record BootClassIndex(Class<?> exceptionHandler, Class<?> controllerAdvice, List<Class<?>> schedules) {}
+
+    private static BootClassIndex bootClassIndex() {
+        BootClassIndex cached = bootClassIndexRef.get();
+        if (cached != null) return cached;
+
+        DependencyContainer dependencyContainer = getCurrentDependencyContainer();
+        if (dependencyContainer == null) return new BootClassIndex(null, null, List.of());
+
+        Class<?> exceptionHandler = null;
+        Class<?> controllerAdvice = null;
+        List<Class<?>> schedules = new ArrayList<>();
+
+        for (Class<?> clazz : dependencyContainer.getLoadedSystemClasses()) {
+            if (exceptionHandler == null && clazz.isAnnotationPresent(ExceptionHandler.class)) {
+                exceptionHandler = clazz;
+            }
+            if (controllerAdvice == null && clazz.isAnnotationPresent(ControllerAdvice.class)) {
+                controllerAdvice = clazz;
+            }
+            if (clazz.isAnnotationPresent(Schedule.class)) {
+                schedules.add(clazz);
+            }
+        }
+
+        bootClassIndexRef.compareAndSet(null, new BootClassIndex(exceptionHandler, controllerAdvice, List.copyOf(schedules)));
+
+        return bootClassIndexRef.get();
+    }
+
     private static void invokeHooks(LifecycleHook.Event event) {
-        logInfo("Invocando hooks para o evento {}", event);
         List<Method> methods = eventMethodMap.get(event);
-        DependencyContainer dependencyContainer = getDependencyContainer();
+
+        if (methods == null || methods.isEmpty()) return;
+
+        logInfo("Invocando hooks para o evento {}", event);
+        DependencyContainer dependencyContainer = getCurrentDependencyContainer();
         if (methods != null) {
             for (Method method : methods) {
                 method.setAccessible(true);
@@ -407,8 +445,7 @@ public class ManagedApplication {
     private static void runSchedulerAsync(){
         if(scheduledExecutorService != null){
             CompletableFuture.runAsync(() -> {
-                for(Class<?> clazz : getCurrentDependencyContainer().getLoadedSystemClasses()){
-                    if(!clazz.isAnnotationPresent(Schedule.class)) continue;
+                for(Class<?> clazz : bootClassIndex().schedules()){
                     try{
                         executeScheduleItem(clazz);
                     }catch (Exception e){
@@ -466,10 +503,39 @@ public class ManagedApplication {
         };
 
         if (start) {
+            long startNanos = "BOOT_START".equals(label) && applicationStartNanos.get() != 0L
+                    ? applicationStartNanos.get()
+                    : System.nanoTime();
+            lifecyclePhaseStart.put(label, startNanos);
             logInfo("{}...", phase);
-        } else {
-            logInfo("{} concluído", phase);
+            return;
         }
+
+        Long startedAt = lifecyclePhaseStart.remove(startLabelOf(label));
+
+        if (startedAt == null) {
+            logInfo("{} concluído", phase);
+            return;
+        }
+
+        logInfo("{} concluído em {}", phase, formatDuration(elapsedMillis(startedAt)));
+    }
+
+    private static String startLabelOf(String label) {
+        return switch (label) {
+            case "BOOT_COMPLETE" -> "BOOT_START";
+            case "SHUTDOWN_COMPLETE" -> "SHUTDOWN_START";
+            default -> label;
+        };
+    }
+
+    private static String formatDuration(long millis) {
+        if (millis < 1000L) return millis + " ms";
+        return String.format(Locale.ROOT, "%.3f s", millis / 1000.0);
+    }
+
+    private static long elapsedMillis(long startNanos) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
     }
 
     private static void logInfo(String msg, Object... args) {
@@ -679,17 +745,13 @@ public class ManagedApplication {
             return;
         }
 
-        Optional<Class<?>> dependencyContainerExceptionHandlerClassOpt =  dependencyContainer.getLoadedSystemClasses()
-                .parallelStream()
-                .filter(e -> e.isAnnotationPresent(ExceptionHandler.class))
-                .findFirst();
+        Class<?> handlerClass = bootClassIndex().exceptionHandler();
 
-        if(dependencyContainerExceptionHandlerClassOpt.isEmpty()) {
+        if(handlerClass == null) {
             defineSimpleExceptionHandler();
             return;
         }
 
-        Class<?> handlerClass = dependencyContainerExceptionHandlerClassOpt.get();
         try{
             logWarn("Delegando Exception handler para [{}]", handlerClass.getName());
             handlerInvoker.set(new ExceptionHandlerInvokerService(handlerClass, dependencyContainer));
@@ -752,13 +814,7 @@ public class ManagedApplication {
                 try {
                     logInfo("Iniciando varredura de classes para localizar @ControllerAdvice...");
 
-                    Class<?> classOfControllerAdvice = null;
-                    for (Class<?> classOfService : dependencyContainer.getLoadedSystemClasses()) {
-                        if (classOfService.isAnnotationPresent(ControllerAdvice.class)) {
-                            classOfControllerAdvice = classOfService;
-                            break;
-                        }
-                    }
+                    Class<?> classOfControllerAdvice = bootClassIndex().controllerAdvice();
 
                     if (classOfControllerAdvice != null) {
                         logInfo("ControllerAdvice encontrado: " + classOfControllerAdvice.getName());

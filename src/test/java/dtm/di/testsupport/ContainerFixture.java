@@ -17,8 +17,12 @@ public final class ContainerFixture {
     }
 
     public static DependencyContainerStorage newContainer(String... profiles) {
+        return newContainer(MainCounter.class, profiles);
+    }
+
+    public static DependencyContainerStorage newContainer(Class<?> mainClass, String... profiles) {
         StaticContainer.removeDependencyContainer(DependencyContainerStorage.class);
-        return DependencyContainerStorage.getInstance(MainCounter.class, profiles);
+        return DependencyContainerStorage.getInstance(mainClass, profiles);
     }
 
     public static DependencyContainerStorage newLoadedContainer(String... profiles) throws InvalidClassRegistrationException {

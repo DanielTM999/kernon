@@ -60,9 +60,9 @@ public class ClassFinderConfigurationsStorage implements ClassFinderConfiguratio
         jars.add("classfinder");
 
         return new ConfigData(
-                defaults.getAllElements(),
-                true,
                 false,
+                true,
+                true,
                 packages,
                 jars,
                 null,

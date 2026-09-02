@@ -101,6 +101,10 @@ public final class ExternalModule implements AutoCloseable {
         return classLoader;
     }
 
+    public String classesDirectory() {
+        return outputDirectory.resolve("classes").toAbsolutePath().toString();
+    }
+
     public Class<?> load(String className) {
         try {
             return Class.forName(className, true, classLoader);

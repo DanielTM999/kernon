@@ -22,6 +22,7 @@ public class BeanDependencyGraphBuilder {
     private final Map<String, BeanInfo> allBeans;
     private final Map<Class<?>, String> typeToBeanId;
     private final Predicate<Method> beanMethodFilter;
+    private final Map<Class<?>, Boolean> userServiceCache = new HashMap<>();
 
     public BeanDependencyGraphBuilder(Set<Class<?>> serviceClasses) {
         this(serviceClasses, method -> true);
@@ -257,6 +258,15 @@ public class BeanDependencyGraphBuilder {
         if (type.isPrimitive() || type.getName().startsWith("java.")) {
             return false;
         }
-        return serviceClasses.contains(type) || serviceClasses.stream().anyMatch(type::isAssignableFrom);
+
+        Boolean cached = userServiceCache.get(type);
+        if (cached != null) {
+            return cached;
+        }
+
+        boolean userService = serviceClasses.contains(type) || serviceClasses.stream().anyMatch(type::isAssignableFrom);
+        userServiceCache.put(type, userService);
+
+        return userService;
     }
 }

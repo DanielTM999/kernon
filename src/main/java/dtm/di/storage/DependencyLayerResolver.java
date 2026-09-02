@@ -17,14 +17,30 @@ public class DependencyLayerResolver {
 
     public List<Set<Class<?>>> resolveLayers() {
         List<Set<Class<?>>> layers = new ArrayList<>();
-        Set<Class<?>> processed = new HashSet<>();
-
 
         if(serviceLoadedClass.isEmpty()){
             return layers;
         }
 
-        Set<Class<?>> currentLayer = findInitialLayer();
+        Map<Class<?>, Integer> pendingDependencies = new HashMap<>();
+        Map<Class<?>, List<Class<?>>> dependents = new HashMap<>();
+
+        for (Class<?> service : serviceLoadedClass) {
+            int pending = 0;
+            for (Class<?> dependency : dependencyGraph.getOrDefault(service, Set.of())) {
+                if (!serviceLoadedClass.contains(dependency)) continue;
+                pending++;
+                dependents.computeIfAbsent(dependency, key -> new ArrayList<>()).add(service);
+            }
+            pendingDependencies.put(service, pending);
+        }
+
+        Set<Class<?>> currentLayer = new HashSet<>();
+        for (Class<?> service : serviceLoadedClass) {
+            if (pendingDependencies.get(service) == 0) {
+                currentLayer.add(service);
+            }
+        }
 
         if (currentLayer.isEmpty()) {
             handleCircularDependency();
@@ -32,37 +48,20 @@ public class DependencyLayerResolver {
 
         while (!currentLayer.isEmpty()) {
             layers.add(currentLayer);
-            processed.addAll(currentLayer);
 
-            currentLayer = serviceLoadedClass.stream()
-                    .filter(c -> !processed.contains(c))
-                    .filter(c -> {
-                        Set<Class<?>> deps = dependencyGraph.getOrDefault(c, Set.of());
-                        Set<Class<?>> serviceDeps = deps.stream()
-                                .filter(serviceLoadedClass::contains)
-                                .collect(Collectors.toSet());
-                        return processed.containsAll(serviceDeps);
-                    })
-                    .collect(Collectors.toSet());
+            Set<Class<?>> nextLayer = new HashSet<>();
+            for (Class<?> resolved : currentLayer) {
+                for (Class<?> dependent : dependents.getOrDefault(resolved, List.of())) {
+                    if (pendingDependencies.merge(dependent, -1, Integer::sum) == 0) {
+                        nextLayer.add(dependent);
+                    }
+                }
+            }
+
+            currentLayer = nextLayer;
         }
 
         return layers;
-    }
-
-    private Set<Class<?>> findInitialLayer() {
-        return serviceLoadedClass.stream()
-                .filter(c -> {
-                    Set<Class<?>> allDeps = dependencyGraph.getOrDefault(c, Set.of());
-                    Set<Class<?>> serviceDeps = filterServiceDependencies(allDeps);
-                    return serviceDeps.isEmpty();
-                })
-                .collect(Collectors.toSet());
-    }
-
-    private Set<Class<?>> filterServiceDependencies(Set<Class<?>> dependencies) {
-        return dependencies.stream()
-                .filter(serviceLoadedClass::contains)
-                .collect(Collectors.toSet());
     }
 
     private void handleCircularDependency() {

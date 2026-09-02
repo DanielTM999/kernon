@@ -215,6 +215,24 @@ class ExternalLoadTest {
     }
 
     @Test
+    @DisplayName("@Import externo carrega configurações e componentes recursivamente")
+    void externalImportLoadsRecursively() throws Exception {
+        Class<?> configuration = module.load(ExternalFixtures.IMPORTING_CONFIGURATION);
+        Class<?> importedService = module.load(ExternalFixtures.IMPORTED_SERVICE);
+        Class<?> importedBean = module.load(ExternalFixtures.IMPORTED_BEAN);
+
+        container.loadExternal(List.of(configuration));
+
+        Object service = container.getDependency(importedService);
+        Object bean = container.getDependency(importedBean);
+
+        assertNotNull(service);
+        assertNotNull(bean);
+        assertEquals("imported", ContainerFixture.invoke(service, "value"));
+        assertEquals("imported", ContainerFixture.invoke(bean, "value"));
+    }
+
+    @Test
     @DisplayName("@Profile em método produtor filtra o bean antes da execução")
     void profileOnProducerMethodFiltersBean() throws Exception {
         Class<?> configuration = module.load(ExternalFixtures.PROFILED_PRODUCER_CONFIGURATION);

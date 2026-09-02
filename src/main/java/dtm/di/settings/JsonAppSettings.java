@@ -45,7 +45,7 @@ public class JsonAppSettings implements AppSettings, AppSettingsRegistry {
     private static final String ALLOWED_MODES_PROPERTY = "allowedModes";
     private static final String FAIL_ON_POLICY_OVERRIDE_PROPERTY = "failOnPolicyOverride";
 
-    private final ObjectMapper mapper = new ObjectMapper();
+    private static final ObjectMapper MAPPER = new ObjectMapper();
     private final ReentrantReadWriteLock stateLock = new ReentrantReadWriteLock();
     private final String resourceName;
     private final List<String> profiles;
@@ -206,7 +206,7 @@ public class JsonAppSettings implements AppSettings, AppSettingsRegistry {
             throw new SettingsRegistrationException("O settings externo '" + sourceDescription + "' está vazio.");
         }
         try {
-            JsonNode node = mapper.readTree(content);
+            JsonNode node = MAPPER.readTree(content);
             if (node == null || !node.isObject()) {
                 throw new SettingsRegistrationException(
                         "O settings externo '" + sourceDescription + "' deve possuir um objeto JSON na raiz."
@@ -246,7 +246,7 @@ public class JsonAppSettings implements AppSettings, AppSettingsRegistry {
             }
             String content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             if (content.isBlank()) return JsonNodeFactory.instance.objectNode();
-            JsonNode node = mapper.readTree(content);
+            JsonNode node = MAPPER.readTree(content);
             if (node == null || !node.isObject()) {
                 log.warn("'{}' não é um objeto JSON. Usando configuração vazia.", name);
                 return JsonNodeFactory.instance.objectNode();
@@ -373,7 +373,7 @@ public class JsonAppSettings implements AppSettings, AppSettingsRegistry {
         JsonNode element = lookupSnapshot(key);
         if (!isAbsent(element)) {
             try {
-                return mapper.treeToValue(element, type);
+                return MAPPER.treeToValue(element, type);
             } catch (Exception e) {
                 log.warn("Falha ao desserializar {} como {}: {}. Usando instância default.",
                         key, type.getName(), e.getMessage());
@@ -388,8 +388,8 @@ public class JsonAppSettings implements AppSettings, AppSettingsRegistry {
         JsonNode element = lookupSnapshot(key);
         if (!isAbsent(element)) {
             try {
-                JavaType javaType = mapper.getTypeFactory().constructType(type);
-                return mapper.convertValue(element, javaType);
+                JavaType javaType = MAPPER.getTypeFactory().constructType(type);
+                return MAPPER.convertValue(element, javaType);
             } catch (Exception e) {
                 log.warn("Falha ao desserializar {} como {}: {}. Usando instancia default.",
                         key, type.getTypeName(), e.getMessage());
