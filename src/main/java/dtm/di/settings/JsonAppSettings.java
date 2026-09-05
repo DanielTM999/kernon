@@ -39,7 +39,10 @@ public class JsonAppSettings implements AppSettings, AppSettingsRegistry {
 
     public static final String DEFAULT_RESOURCE_NAME = "settings.json";
 
+    public static final String CLASS_SCAN_PROPERTY = "classScan";
+
     private static final String REGISTRY_PROPERTY = "settingsRegistry";
+    private static final Set<String> RESERVED_PROPERTIES = Set.of(REGISTRY_PROPERTY, CLASS_SCAN_PROPERTY);
     private static final String ENABLED_PROPERTY = "enabled";
     private static final String REQUIRED_PROPERTY = "required";
     private static final String ALLOWED_MODES_PROPERTY = "allowedModes";
@@ -128,13 +131,14 @@ public class JsonAppSettings implements AppSettings, AppSettingsRegistry {
     }
 
     private void registerParsed(ObjectNode external, SettingsRegistrationMode mode) {
-        if (external.has(REGISTRY_PROPERTY)) {
+        for (String reserved : RESERVED_PROPERTIES) {
+            if (!external.has(reserved)) continue;
             if (failOnPolicyOverride) {
                 throw new SettingsRegistrationBlockedException(
-                        "A fonte externa tentou alterar a política reservada '" + REGISTRY_PROPERTY + "'."
+                        "A fonte externa tentou alterar a política reservada '" + reserved + "'."
                 );
             }
-            external.remove(REGISTRY_PROPERTY);
+            external.remove(reserved);
         }
 
         if (external.isEmpty()) return;

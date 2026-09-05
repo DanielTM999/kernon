@@ -166,9 +166,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         this.externalComponentRegistrations = new ConcurrentHashMap<>();
         this.externalLock = new ReentrantLock();
         this.externalRegistrationSequence = new AtomicLong();
-        this.classFinderConfigurations = getFindConfigurations();
         this.mainClass = mainClass;
         this.profiles = resolveProfiles(profiles);
+        this.classFinderConfigurations = getFindConfigurations();
     }
 
     private static List<String> resolveProfiles(String... profiles){
@@ -1612,7 +1612,15 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private ClassFinderConfigurations getFindConfigurations(){
-        return new ClassFinderConfigurationsStorage();
+        try{
+            String[] activeProfiles = profiles == null ? new String[0] : profiles.toArray(String[]::new);
+            return ClassFinderConfigurationsStorage.fromSettings(
+                    new JsonAppSettings(JsonAppSettings.DEFAULT_RESOURCE_NAME, activeProfiles)
+            );
+        }catch (Exception e){
+            log.warn("Falha ao ler a configuração de scan do settings. Usando os padrões.", e);
+            return new ClassFinderConfigurationsStorage();
+        }
     }
 
     private String getQualifierName(@NonNull Class<?> clazz){
