@@ -53,7 +53,7 @@
         <dependency>
             <groupId>com.github.DanielTM999</groupId>
             <artifactId>classfinder</artifactId>
-            <version>1.0.1</version>
+            <version>${classfinder.version}</version>
         </dependency>
 
         <dependency>
