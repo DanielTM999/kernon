@@ -10,6 +10,8 @@ public final class PerfFixtures {
     public static final String MARKER = "perf.PerfMarker";
     public static final String CONFIGURATION = "perf.PerfConfiguration";
     public static final String BEAN_WITH_SERVICE = "perf.PerfBeanWithService";
+    public static final String GENERIC_PROCESSOR = "perf.PerfProcessor";
+    public static final String ASYNC_GENERIC_CONFIGURATION = "perf.PerfAsyncGenericConfiguration";
 
     private PerfFixtures() {
     }
@@ -32,8 +34,58 @@ public final class PerfFixtures {
         return names;
     }
 
+    public static String payloadName(int index) {
+        return "perf.PerfPayload" + index;
+    }
+
+    public static String processorName(int index) {
+        return "perf.PerfProcessor" + index;
+    }
+
+    public static String genericConsumerName(int index) {
+        return "perf.PerfGenericConsumer" + index;
+    }
+
+    public static List<String> genericNames(int genericPairs) {
+        List<String> names = new ArrayList<>();
+        for (int index = 0; index < genericPairs; index++) {
+            names.add(processorName(index));
+            names.add(genericConsumerName(index));
+        }
+        return names;
+    }
+
+    public static String asyncConsumerName(int index) {
+        return "perf.PerfAsyncConsumer" + index;
+    }
+
+    public static List<String> asyncNames(int asyncPairs) {
+        List<String> names = new ArrayList<>();
+        names.add(ASYNC_GENERIC_CONFIGURATION);
+        for (int index = 0; index < asyncPairs; index++) {
+            names.add(asyncConsumerName(index));
+        }
+        return names;
+    }
+
     public static Map<String, String> sources(int layers, int perLayer, int configBeans) {
+        return sources(layers, perLayer, configBeans, 0);
+    }
+
+    public static Map<String, String> sources(int layers, int perLayer, int configBeans, int genericPairs) {
+        return sources(layers, perLayer, configBeans, genericPairs, 0);
+    }
+
+    public static Map<String, String> sources(int layers, int perLayer, int configBeans, int genericPairs, int asyncPairs) {
         Map<String, String> sources = new LinkedHashMap<>();
+
+        if (genericPairs > 0) {
+            sources.putAll(genericSources(genericPairs));
+        }
+
+        if (asyncPairs > 0) {
+            sources.putAll(asyncGenericSources(asyncPairs));
+        }
 
         sources.put(MARKER, """
                 package perf;
@@ -55,6 +107,124 @@ public final class PerfFixtures {
 
         sources.put(BEAN_WITH_SERVICE, bean("PerfBeanWithService"));
         sources.put(CONFIGURATION, configuration(configBeans));
+
+        return sources;
+    }
+
+    private static Map<String, String> asyncGenericSources(int asyncPairs) {
+        Map<String, String> sources = new LinkedHashMap<>();
+
+        StringBuilder producers = new StringBuilder();
+        for (int index = 0; index < asyncPairs; index++) {
+            producers.append("""
+
+                    @Async
+                    @Component
+                    public PerfProcessor<PerfAsyncPayload%d> asyncProcessor%d() {
+                        return () -> "async-processor-%d";
+                    }
+                """.formatted(index, index, index));
+
+            sources.put("perf.PerfAsyncPayload" + index, """
+                    package perf;
+
+                    public final class PerfAsyncPayload%d {
+                    }
+                    """.formatted(index));
+
+            sources.put(asyncConsumerName(index), """
+                    package perf;
+
+                    import dtm.di.annotations.Component;
+                    import dtm.di.annotations.Inject;
+                    import dtm.di.annotations.Singleton;
+                    import dtm.di.prototypes.async.AsyncComponent;
+
+                    @Singleton
+                    @Component
+                    public class PerfAsyncConsumer%d {
+
+                        @Inject
+                        private AsyncComponent<PerfProcessor<PerfAsyncPayload%d>> processor;
+
+                        public AsyncComponent<PerfProcessor<PerfAsyncPayload%d>> processor() {
+                            return processor;
+                        }
+                    }
+                    """.formatted(index, index, index));
+        }
+
+        sources.put(ASYNC_GENERIC_CONFIGURATION, """
+                package perf;
+
+                import dtm.di.annotations.Async;
+                import dtm.di.annotations.Component;
+                import dtm.di.annotations.Configuration;
+
+                @Configuration
+                public class PerfAsyncGenericConfiguration {
+                %s
+                }
+                """.formatted(producers.toString()));
+
+        return sources;
+    }
+
+    private static Map<String, String> genericSources(int genericPairs) {
+        Map<String, String> sources = new LinkedHashMap<>();
+
+        sources.put(GENERIC_PROCESSOR, """
+                package perf;
+
+                public interface PerfProcessor<T> {
+                    String describe();
+                }
+                """);
+
+        for (int index = 0; index < genericPairs; index++) {
+            sources.put(payloadName(index), """
+                    package perf;
+
+                    public final class PerfPayload%d {
+                    }
+                    """.formatted(index));
+
+            sources.put(processorName(index), """
+                    package perf;
+
+                    import dtm.di.annotations.Component;
+                    import dtm.di.annotations.Singleton;
+
+                    @Singleton
+                    @Component
+                    public class PerfProcessor%d implements PerfProcessor<PerfPayload%d> {
+                        @Override
+                        public String describe() {
+                            return "processor-%d";
+                        }
+                    }
+                    """.formatted(index, index, index));
+
+            sources.put(genericConsumerName(index), """
+                    package perf;
+
+                    import dtm.di.annotations.Component;
+                    import dtm.di.annotations.Inject;
+                    import dtm.di.annotations.Singleton;
+
+                    @Singleton
+                    @Component
+                    public class PerfGenericConsumer%d {
+
+                        @Inject
+                        private PerfProcessor<PerfPayload%d> processor;
+
+                        public String describe() {
+                            return processor.describe();
+                        }
+                    }
+                    """.formatted(index, index));
+        }
 
         return sources;
     }

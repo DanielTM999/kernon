@@ -795,10 +795,21 @@ public class ManagedApplication {
 
     }
 
+    private static final long SCHEDULER_SHUTDOWN_TIMEOUT_SECONDS = 5;
+
     private static void stopSchedulerGracefully(){
         ScheduledExecutorService scheduler = scheduledExecutorService;
-        if (scheduler != null) {
-            scheduler.shutdown();
+        if (scheduler == null) return;
+
+        scheduler.shutdown();
+        try {
+            if (!scheduler.awaitTermination(SCHEDULER_SHUTDOWN_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                logInfo("Scheduler nao terminou em {}s; cancelando tarefas pendentes", SCHEDULER_SHUTDOWN_TIMEOUT_SECONDS);
+                scheduler.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            scheduler.shutdownNow();
+            Thread.currentThread().interrupt();
         }
     }
 

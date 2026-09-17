@@ -14,7 +14,9 @@ import dtm.di.settings.JsonAppSettings;
 import dtm.di.annotations.settings.Value;
 import dtm.di.core.ClassFinderDependencyContainer;
 import dtm.di.core.DependencyContainer;
+import dtm.di.core.AmbiguityPolicy;
 import dtm.di.core.InjectionStrategy;
+import dtm.di.core.PrototypeListenerPolicy;
 import dtm.di.exceptions.*;
 import dtm.di.prototypes.*;
 import dtm.di.prototypes.async.AsyncComponent;
@@ -27,9 +29,13 @@ import dtm.di.storage.bean.BeanDependencyGraphBuilder;
 import dtm.di.storage.bean.BeanGraph;
 import dtm.di.storage.composite.CompositeDependencyStorage;
 import dtm.di.storage.external.DependencyRegistrationSlot;
+import dtm.di.storage.external.GenericRegistrationSlot;
 import dtm.di.storage.external.ExternalComponentRegistration;
 import dtm.di.storage.external.ExternalLoadBatch;
 import dtm.di.storage.lazy.Lazy;
+import dtm.di.common.reflection.GenericTypes;
+import dtm.di.common.reflection.WrapperTypes;
+import dtm.di.exceptions.AmbiguousDependencyException;
 import dtm.di.storage.lazy.ParamtrizedObject;
 import dtm.di.event.EventListenerRegistration;
 import dtm.discovery.core.ClassFinder;
@@ -54,6 +60,7 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static dtm.di.common.AnnotationsUtils.hasMetaAnnotation;
 import static dtm.di.common.AnnotationsUtils.getAllFieldWithAnnotation;
@@ -64,6 +71,10 @@ import static dtm.di.common.AnnotationsUtils.getAllFieldWithAnnotation;
 public class DependencyContainerStorage implements DependencyContainer, ClassFinderDependencyContainer {
 
     private static final String INJECTION_STRATEGY_PROPERTY = "dependencyContainer.injectionStrategy";
+    private static final int GRAPH_UNWRAP_DEPTH_LIMIT = 8;
+    private static final String AMBIGUITY_POLICY_PROPERTY = "dependencyContainer.ambiguityPolicy";
+    private static final String GENERIC_RESOLUTION_PROPERTY = "dependencyContainer.genericResolution";
+    private static final String PROTOTYPE_LISTENER_POLICY_PROPERTY = "dependencyContainer.prototypeListenerPolicy";
 
     private final ExecutorService mainExecutor;
     private final ExecutorService mainVirtualExecutor;
@@ -72,8 +83,22 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     private final AtomicBoolean injectionStrategyConfiguredProgrammatically;
     private final Object injectionStrategyConfigurationLock;
 
+    private final AtomicReference<AmbiguityPolicy> ambiguityPolicy;
+    private final AtomicBoolean ambiguityPolicyConfiguredProgrammatically;
+    private final Object ambiguityPolicyConfigurationLock;
+
+    private final AtomicBoolean genericResolutionEnabled;
+    private final AtomicBoolean genericResolutionConfiguredProgrammatically;
+    private final Object genericResolutionConfigurationLock;
+
+    private final AtomicReference<PrototypeListenerPolicy> prototypeListenerPolicy;
+    private final AtomicBoolean prototypeListenerPolicyConfiguredProgrammatically;
+    private final Object prototypeListenerPolicyConfigurationLock;
+
     private final Map<Class<?>, Map<String, Dependency>> dependencyContainer;
     private final Map<Class<?>, Dependency> primaryDependencyIndex;
+    private final Map<String, Map<String, Dependency>> genericDependencyIndex;
+    private final Map<AliasSlot, Set<Class<?>>> contestedAliases;
     private final ClassFinder classFinder;
     private final AtomicBoolean loaded;
 
@@ -151,6 +176,17 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         this.mainVirtualExecutor = Executors.newThreadPerTaskExecutor(vFactory);
         this.dependencyContainer = new ConcurrentHashMap<>();
         this.primaryDependencyIndex = new ConcurrentHashMap<>();
+        this.genericDependencyIndex = new ConcurrentHashMap<>();
+        this.contestedAliases = new ConcurrentHashMap<>();
+        this.ambiguityPolicy = new AtomicReference<>(AmbiguityPolicy.FAIL_FAST);
+        this.ambiguityPolicyConfiguredProgrammatically = new AtomicBoolean(false);
+        this.ambiguityPolicyConfigurationLock = new Object();
+        this.genericResolutionEnabled = new AtomicBoolean(true);
+        this.genericResolutionConfiguredProgrammatically = new AtomicBoolean(false);
+        this.genericResolutionConfigurationLock = new Object();
+        this.prototypeListenerPolicy = new AtomicReference<>(PrototypeListenerPolicy.SKIP);
+        this.prototypeListenerPolicyConfiguredProgrammatically = new AtomicBoolean(false);
+        this.prototypeListenerPolicyConfigurationLock = new Object();
         this.loaded = new AtomicBoolean(false);
         this.classFinder = new ClassFinderProjectService();
         this.childrenRegistration = false;
@@ -248,6 +284,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             registerExternalBeens(externalBeenBefore, null, null);
             registerAppSettingsIfAbsent();
             applyDeclarativeInjectionStrategy();
+            applyDeclarativeAmbiguityPolicy();
+            applyDeclarativeGenericResolution();
+            applyDeclarativePrototypeListenerPolicy();
             registerEventPublisher();
             loadBeens();
             registerExternalBeens(externalBeenAfter, null, null);
@@ -324,6 +363,24 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
      * a inicialização do EventPublisher force a criação de todos os serviços
      * e aspectos registrados no container.
      */
+    private boolean shouldRegisterPrototypeListener(Class<?> listenerClass) {
+        PrototypeListenerPolicy policy = prototypeListenerPolicy.get();
+
+        if (policy == PrototypeListenerPolicy.REGISTER) {
+            return true;
+        }
+
+        if (policy == PrototypeListenerPolicy.SKIP) {
+            log.warn(
+                    "Listener de evento '{}' e prototype e nao sera registrado no scan inicial: cada resolucao cria uma instancia diferente. Use @Singleton, registre o listener manualmente, ou mude '{}' para REGISTER.",
+                    listenerClass.getName(),
+                    PROTOTYPE_LISTENER_POLICY_PROPERTY
+            );
+        }
+
+        return false;
+    }
+
     private List<Object> getLoadedEventListeners() {
         List<Object> listeners = new ArrayList<>();
         Set<Object> visited = Collections.newSetFromMap(new IdentityHashMap<>());
@@ -334,6 +391,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             }
 
             for (Dependency dependency : entry.getValue().values()) {
+                if (!dependency.isSingleton() && !shouldRegisterPrototypeListener(entry.getKey())) {
+                    continue;
+                }
+
                 try {
                     Object instance = dependency.getDependency();
                     if (instance != null && visited.add(instance)) {
@@ -384,6 +445,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             serviceBeensDefinitionLayer.clear();
             dependencyContainer.clear();
             primaryDependencyIndex.clear();
+            genericDependencyIndex.clear();
+            contestedAliases.clear();
+            GenericTypes.clear();
             foldersToLoad.clear();
             externalBeenBefore.clear();
             externalBeenAfter.clear();
@@ -547,6 +611,113 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     @Override
+    public void setAmbiguityPolicy(AmbiguityPolicy ambiguityPolicy) {
+        synchronized (ambiguityPolicyConfigurationLock){
+            this.ambiguityPolicyConfiguredProgrammatically.set(true);
+            this.ambiguityPolicy.set(ambiguityPolicy != null ? ambiguityPolicy : AmbiguityPolicy.FAIL_FAST);
+        }
+    }
+
+    @Override
+    public void setPrototypeListenerPolicy(PrototypeListenerPolicy policy) {
+        synchronized (prototypeListenerPolicyConfigurationLock){
+            this.prototypeListenerPolicyConfiguredProgrammatically.set(true);
+            this.prototypeListenerPolicy.set(policy != null ? policy : PrototypeListenerPolicy.SKIP);
+        }
+    }
+
+    @Override
+    public void setGenericResolutionEnabled(boolean enabled) {
+        synchronized (genericResolutionConfigurationLock){
+            this.genericResolutionConfiguredProgrammatically.set(true);
+            this.genericResolutionEnabled.set(enabled);
+        }
+    }
+
+    private AppSettings resolveDeclarativeSettings() {
+        AppSettings settings = resolveAppSettings();
+        if(settings == null){
+            settings = new JsonAppSettings(
+                    JsonAppSettings.DEFAULT_RESOURCE_NAME,
+                    profiles.toArray(String[]::new)
+            );
+        }
+        return settings;
+    }
+
+    private void applyDeclarativeAmbiguityPolicy() {
+        applyDeclarativeEnum(
+                AMBIGUITY_POLICY_PROPERTY,
+                AmbiguityPolicy.class,
+                AmbiguityPolicy.FAIL_FAST,
+                ambiguityPolicyConfiguredProgrammatically,
+                ambiguityPolicyConfigurationLock,
+                ambiguityPolicy
+        );
+    }
+
+    private void applyDeclarativePrototypeListenerPolicy() {
+        applyDeclarativeEnum(
+                PROTOTYPE_LISTENER_POLICY_PROPERTY,
+                PrototypeListenerPolicy.class,
+                PrototypeListenerPolicy.SKIP,
+                prototypeListenerPolicyConfiguredProgrammatically,
+                prototypeListenerPolicyConfigurationLock,
+                prototypeListenerPolicy
+        );
+    }
+
+    private <T extends Enum<T>> void applyDeclarativeEnum(
+            String property,
+            Class<T> type,
+            T defaultValue,
+            AtomicBoolean configuredProgrammatically,
+            Object configurationLock,
+            AtomicReference<T> target
+    ) {
+        if(configuredProgrammatically.get()) return;
+
+        AppSettings settings = resolveDeclarativeSettings();
+        if(!settings.has(property)) return;
+
+        String configuredValue = settings.getString(property, "");
+        String normalizedValue = (configuredValue == null)
+                ? ""
+                : configuredValue.trim().toUpperCase(Locale.ROOT);
+
+        T declarativeValue;
+        boolean invalidValue = false;
+        try{
+            declarativeValue = Enum.valueOf(type, normalizedValue);
+        }catch (IllegalArgumentException e){
+            declarativeValue = defaultValue;
+            invalidValue = true;
+        }
+
+        synchronized (configurationLock){
+            if(configuredProgrammatically.get()) return;
+            target.set(declarativeValue);
+            if(invalidValue){
+                log.warn("Valor desconhecido '{}' em '{}'. Usando {}.", configuredValue, property, defaultValue);
+            }
+        }
+    }
+
+    private void applyDeclarativeGenericResolution() {
+        if(genericResolutionConfiguredProgrammatically.get()) return;
+
+        AppSettings settings = resolveDeclarativeSettings();
+        if(!settings.has(GENERIC_RESOLUTION_PROPERTY)) return;
+
+        boolean declarativeValue = settings.getBoolean(GENERIC_RESOLUTION_PROPERTY, true);
+
+        synchronized (genericResolutionConfigurationLock){
+            if(genericResolutionConfiguredProgrammatically.get()) return;
+            this.genericResolutionEnabled.set(declarativeValue);
+        }
+    }
+
+    @Override
     public <T> T getDependency(Class<T> reference) {
         throwIfUnload();
         return getDependency(reference, getQualifierName(reference));
@@ -566,11 +737,33 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     @Override
     public <T> AsyncComponent<T> getDependencyAsync(Class<T> reference, String qualifier, boolean isAsyncComponent) {
+        throwIfUnload();
+        return resolveDependencyAsync(reference, reference, qualifier, isAsyncComponent);
+    }
+
+    @Override
+    public <T> AsyncComponent<T> getDependencyAsync(TypeRef<T> reference, boolean isAsyncComponent) {
+        throwIfUnload();
+        return getDependencyAsync(reference, getQualifierName(reference.getRawType()), isAsyncComponent);
+    }
+
+    @Override
+    public <T> AsyncComponent<T> getDependencyAsync(TypeRef<T> reference, String qualifier, boolean isAsyncComponent) {
+        throwIfUnload();
+        return resolveDependencyAsync(reference.getRawType(), reference.getType(), qualifier, isAsyncComponent);
+    }
+
+    private <T> AsyncComponent<T> resolveDependencyAsync(
+            Class<T> reference,
+            Type requested,
+            String qualifier,
+            boolean isAsyncComponent
+    ) {
         if(isAsyncComponent){
-            return getAsyncComponent(reference, qualifier, () -> true);
+            return getAsyncComponent(reference, requested, qualifier, () -> true);
         }
         return new AsyncComponentStorage<>(reference, qualifier, CompletableFuture.supplyAsync(() -> {
-            return getDependency(reference, qualifier);
+            return reference.cast(resolveDependency(requested, qualifier, () -> true, describeAsyncOrigin(requested)));
         }, mainExecutor));
     }
 
@@ -798,6 +991,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 primaryDependencyIndex.remove(clazz, dependencyObj);
             }
             primaryDependencyIndex.remove(dependencyObj.getDependencyClass(), dependencyObj);
+            removeGenericIndexEntries(dependencyObj);
+            removeAliasClaims(dependencyObj);
+            GenericTypes.clear(dependencyObj.getDependencyClass());
         }
     }
 
@@ -951,6 +1147,11 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 removeDependencyRegistration(slots.get(index));
             }
 
+            List<GenericRegistrationSlot> genericSlots = registration.snapshotGenericSlots();
+            for(int index = genericSlots.size() - 1; index >= 0; index--){
+                removeGenericRegistrationSlot(genericSlots.get(index));
+            }
+
             for(Map.Entry<Class<?>, Dependency> primary : registration.snapshotPrimaryTypes().entrySet()){
                 primaryDependencyIndex.remove(primary.getKey(), primary.getValue());
             }
@@ -970,6 +1171,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
 
         registrations.remove(slot.qualifier(), slot.dependency());
+        removeAliasClaims(slot.dependency());
 
         if(registrations.isEmpty()){
             dependencyContainer.remove(slot.indexedType(), registrations);
@@ -1025,6 +1227,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         for(ExternalComponentRegistration registration : registrations){
             ProxyFactory.clearCache(registration.snapshotProxyCacheClasses());
             ReflectionCache.clear(registration.snapshotReflectionCacheClasses());
+            GenericTypes.clear(registration.snapshotReflectionCacheClasses());
         }
     }
 
@@ -1385,6 +1588,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                             .singleton(true)
                             .creatorFunction(null)
                             .singletonInstance(singletonInstance)
+                            .declaredGenericType(been.getDeclaredGenericType())
                         .build()
                    : DependencyObject.builder()
                             .dependencyClass(dependency)
@@ -1392,6 +1596,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                             .singleton(false)
                             .creatorFunction(createActivationFunction(dependency, been.isAop()))
                             .singletonInstance(null)
+                            .declaredGenericType(been.getDeclaredGenericType())
                         .build();
 
 
@@ -1426,10 +1631,16 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             if (dependencyContainer.containsKey(dependency)) return;
             validRegistration(dependency, registeringClasses);
 
-            final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(AsyncComponent.class, qualifier, dependency);
-            if(mapOfDependency.values().stream().anyMatch(d -> d.getDependencyClass().equals(dependency))){
+            final String registrationKey = asyncRegistrationKey(dependency, qualifier);
+            if(getDependencyMap(AsyncComponent.class).containsKey(registrationKey)){
                 return;
             }
+
+            final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(
+                    AsyncComponent.class,
+                    registrationKey,
+                    dependency
+            );
 
             CompletableFuture<?> resolveComponentAsync = CompletableFuture.supplyAsync(() -> {
                 boolean shouldApplyAop = been.isAop();
@@ -1450,9 +1661,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
             registerInContainer(
                     mapOfDependency,
-                    dependency,
+                    AsyncComponent.class,
                     dependencyObject,
-                    qualifier,
+                    registrationKey,
+                    false,
                     registration
             );
         }catch (Exception e) {
@@ -1624,35 +1836,51 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private String getQualifierName(@NonNull Class<?> clazz){
-        if(clazz.isAnnotationPresent(Qualifier.class)){
-            Qualifier qualifierAnnotation = clazz.getAnnotation(Qualifier.class);
-            return (qualifierAnnotation.value() == null || qualifierAnnotation.value().isEmpty()) ? "default" : qualifierAnnotation.value();
-        } else if(clazz.isAnnotationPresent(dtm.di.annotations.Primary.class)){
+        String explicitQualifier = declaredQualifierOf(clazz);
+        if(explicitQualifier != null) return explicitQualifier;
+
+        String componentQualifier = componentAnnotationQualifierOf(clazz);
+        if(componentQualifier != null) return componentQualifier;
+
+        if(clazz.isAnnotationPresent(dtm.di.annotations.Primary.class)){
             return "$primary$:" + clazz.getName();
-        } else {
-            return  "default";
         }
+        return  "default";
+    }
+
+    private String declaredQualifierOf(AnnotatedElement element){
+        if(!element.isAnnotationPresent(Qualifier.class)) return null;
+        return normalizeDeclaredQualifier(element.getAnnotation(Qualifier.class).value());
+    }
+
+    private String componentAnnotationQualifierOf(AnnotatedElement element){
+        if(element.isAnnotationPresent(Service.class)){
+            return normalizeDeclaredQualifier(element.getAnnotation(Service.class).qualifier());
+        }
+        if(element.isAnnotationPresent(Component.class)){
+            return normalizeDeclaredQualifier(element.getAnnotation(Component.class).qualifier());
+        }
+        return null;
     }
 
     private String getQualifierName(@NonNull Field variable){
-        if(variable.isAnnotationPresent(Qualifier.class)){
-            Qualifier qualifierAnnotation = variable.getAnnotation(Qualifier.class);
-            return (qualifierAnnotation.value() == null || qualifierAnnotation.value().isEmpty()) ? "default" : qualifierAnnotation.value();
-        } else if(variable.isAnnotationPresent(Inject.class)) {
-            Inject inject = variable.getAnnotation(Inject.class);
-            return (inject.qualifier() == null || inject.qualifier().isEmpty()) ? "default" : inject.qualifier();
-        }else {
-            return  "default";
+        return injectionPointQualifierOf(variable);
+    }
+
+    private String injectionPointQualifierOf(AnnotatedElement element){
+        String explicitQualifier = declaredQualifierOf(element);
+        if(explicitQualifier != null) return explicitQualifier;
+
+        if(element.isAnnotationPresent(Inject.class)){
+            String injectQualifier = normalizeDeclaredQualifier(element.getAnnotation(Inject.class).qualifier());
+            if(injectQualifier != null) return injectQualifier;
         }
+
+        return "default";
     }
 
     private String getQualifierName(@NonNull Parameter variable){
-        if(variable.isAnnotationPresent(Qualifier.class)){
-            Qualifier qualifierAnnotation = variable.getAnnotation(Qualifier.class);
-            return (qualifierAnnotation.value() == null || qualifierAnnotation.value().isEmpty()) ? "default" : qualifierAnnotation.value();
-        } else {
-            return  "default";
-        }
+        return injectionPointQualifierOf(variable);
     }
 
     private String getQualifierName(@NonNull AnnotatedElement variable){
@@ -1668,22 +1896,21 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private String getQualifierName(@NonNull Method beenMethod){
-        String resolved = null;
-        if(beenMethod.isAnnotationPresent(Service.class)){
-            Service qualifierAnnotation = beenMethod.getAnnotation(Service.class);
-            resolved = (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? null : qualifierAnnotation.qualifier();
-        }else if(beenMethod.isAnnotationPresent(Component.class)){
-            Component qualifierAnnotation = beenMethod.getAnnotation(Component.class);
-            resolved = (qualifierAnnotation.qualifier() == null || qualifierAnnotation.qualifier().isEmpty()) ? null : qualifierAnnotation.qualifier();
-        } else if(beenMethod.isAnnotationPresent(Qualifier.class)){
-            Qualifier qualifierAnnotation = beenMethod.getAnnotation(Qualifier.class);
-            resolved = (qualifierAnnotation.value() == null || qualifierAnnotation.value().isEmpty()) ? null : qualifierAnnotation.value();
-        }
-        if(resolved != null) return resolved;
+        String explicitQualifier = declaredQualifierOf(beenMethod);
+        if(explicitQualifier != null) return explicitQualifier;
+
+        String producerQualifier = componentAnnotationQualifierOf(beenMethod);
+        if(producerQualifier != null) return producerQualifier;
+
         if(beenMethod.isAnnotationPresent(Primary.class)){
             return "$primary$:" + beenMethod.getDeclaringClass().getName() + "#" + beenMethod.getName();
         }
         return  "default";
+    }
+
+    private String normalizeDeclaredQualifier(String qualifier){
+        if(qualifier == null || qualifier.isEmpty()) return null;
+        return isDefaultQualifier(qualifier) ? null : qualifier;
     }
 
     private boolean isSingletonBeen(@NonNull Method method){
@@ -1721,8 +1948,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
         for (Field field : ReflectionCache.fields(clazz)) {
             if (field.isAnnotationPresent(Inject.class)) {
-                Class<?> fieldType = field.getType();
-                dependencies.addAll(isServiceDependency(fieldType, serviceIndex, field));
+                dependencies.addAll(isServiceDependency(field.getType(), field.getGenericType(), serviceIndex, field));
             }
         }
 
@@ -1731,19 +1957,49 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 if (param.isAnnotationPresent(Value.class)) {
                     continue;
                 }
-                dependencies.addAll(isServiceDependency(param.getType(), serviceIndex, param));
+                dependencies.addAll(isServiceDependency(param.getType(), param.getParameterizedType(), serviceIndex, param));
             }
         }
 
         return dependencies;
     }
 
-    private Set<Class<?>> isServiceDependency(Class<?> type, ServiceIndex serviceIndex, Object extra) {
-        if(!type.isInterface() && !Modifier.isAbstract(type.getModifiers())){
-            return Set.of(type);
+    private Type unwrapEagerWrapper(Type declaredType) {
+        Type current = declaredType;
+
+        for (int depth = 0; depth < GRAPH_UNWRAP_DEPTH_LIMIT; depth++) {
+            if (!(current instanceof ParameterizedType parameterized)) return current;
+
+            Class<?> raw = GenericTypes.raw(parameterized);
+            if (!WrapperTypes.isEagerWrapper(raw)) return current;
+
+            Type[] arguments = parameterized.getActualTypeArguments();
+            if (arguments.length != 1) return current;
+
+            current = arguments[0];
         }
 
-        List<Class<?>> candidates = serviceIndex.implementationsOf(type);
+        return current;
+    }
+
+    private Type unwrapAsyncComponent(Type declaredType) {
+        if (!(declaredType instanceof ParameterizedType parameterized)) return declaredType;
+        if (!AsyncComponent.class.equals(GenericTypes.raw(parameterized))) return declaredType;
+
+        Type[] arguments = parameterized.getActualTypeArguments();
+        return (arguments.length == 1) ? arguments[0] : declaredType;
+    }
+
+    private Set<Class<?>> isServiceDependency(Class<?> type, Type declaredType, ServiceIndex serviceIndex, Object extra) {
+        Type effectiveType = unwrapEagerWrapper(unwrapAsyncComponent((declaredType != null) ? declaredType : type));
+        Class<?> effectiveRaw = GenericTypes.raw(effectiveType);
+        if (effectiveRaw == null) effectiveRaw = type;
+
+        if(!effectiveRaw.isInterface() && !Modifier.isAbstract(effectiveRaw.getModifiers())){
+            return Set.of(effectiveRaw);
+        }
+
+        List<Class<?>> candidates = serviceIndex.implementationsOf(effectiveRaw);
 
         if(candidates.isEmpty()) return Set.of();
 
@@ -1754,14 +2010,25 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             qualifierElement = getQualifierName(parameter);
         }
 
-        Set<Class<?>> dependencies = new HashSet<>();
+        Set<Class<?>> byQualifier = new HashSet<>();
         for (Class<?> serviceClass : candidates) {
             if (serviceIndex.qualifierOf(serviceClass).equalsIgnoreCase(qualifierElement)) {
-                dependencies.add(serviceClass);
+                byQualifier.add(serviceClass);
             }
         }
 
-        return dependencies;
+        boolean narrowByGenericArgument = genericResolutionEnabled.get()
+                && effectiveType instanceof ParameterizedType
+                && !GenericTypes.hasWildcard(effectiveType);
+
+        if(!narrowByGenericArgument) return byQualifier;
+
+        Type requested = effectiveType;
+        Set<Class<?>> narrowed = byQualifier.stream()
+                .filter(serviceClass -> declaresGenericSupertype(requested, serviceClass))
+                .collect(Collectors.toCollection(HashSet::new));
+
+        return narrowed.isEmpty() ? byQualifier : narrowed;
     }
 
     private final class ServiceIndex {
@@ -1912,12 +2179,12 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                         if(singleton){
 
                             if(result instanceof AsyncRegistrationFunction<?> asyncRegistrationFunction){
-                                registerObjectFunction(asyncRegistrationFunction, isAopEnabled(method), registration);
+                                registerObjectFunction(asyncRegistrationFunction, isAopEnabled(method), registration, producedGenericType(method));
                             }else if(result instanceof RegistrationFunction<?> registrationFunction){
-                                registerObjectFunction(registrationFunction, isAopEnabled(method), registration);
+                                registerObjectFunction(registrationFunction, isAopEnabled(method), registration, producedGenericType(method));
                             }else{
                                 boolean aop = (isAopEnabled(method) && isAopEnabled(result.getClass()));
-                                registerObject(result, qualifier, aop, registration);
+                                registerObject(result, qualifier, aop, registration, method.getGenericReturnType());
                             }
 
                         }else {
@@ -2001,7 +2268,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             }
         };
 
-        registerObjectFunction(asyncProducer, isAopEnabled(method), registration);
+        registerObjectFunction(asyncProducer, isAopEnabled(method), registration, method.getGenericReturnType());
     }
 
     private void validateAsyncProducerDependency(Parameter parameter, Method consumer){
@@ -2010,27 +2277,40 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
 
         String qualifier = getQualifierName(parameter);
+        Type requested = parameter.getParameterizedType();
         Map<String, Dependency> synchronous = dependencyContainer.get(parameter.getType());
         boolean hasSynchronousDependency = resolveWithPrimary(parameter.getType(), synchronous, qualifier) != null;
-        if(!hasSynchronousDependency && hasAsyncComponentRegistration(parameter.getType(), qualifier)){
-            throw new InvalidClassRegistrationException(
-                    "O produtor '" + consumer.getName() + "' depende diretamente de "
-                            + parameter.getType().getName() + ", criado por um produtor @Async. "
-                            + "Receba AsyncComponent<" + parameter.getType().getSimpleName() + ">.",
-                    consumer.getDeclaringClass()
-            );
+
+        if(hasSynchronousDependency || !hasAsyncComponentRegistration(parameter.getType(), requested, qualifier)){
+            return;
         }
+
+        throw new InvalidClassRegistrationException(
+                "O produtor '" + consumer.getName() + "' depende diretamente de "
+                        + requested.getTypeName() + ", criado por um produtor @Async. "
+                        + "Receba " + describeAsyncSuggestion(parameter) + ".",
+                consumer.getDeclaringClass()
+        );
     }
 
-    private boolean hasAsyncComponentRegistration(Class<?> referenceClass, String qualifier){
+    private String describeAsyncSuggestion(Parameter parameter){
+        Type requested = parameter.getParameterizedType();
+        String inner = (requested instanceof ParameterizedType)
+                ? requested.getTypeName()
+                : parameter.getType().getSimpleName();
+        return "AsyncComponent<" + inner + ">";
+    }
+
+    private boolean hasAsyncComponentRegistration(Class<?> referenceClass, Type requested, String qualifier){
         Map<String, Dependency> registrations = dependencyContainer.get(AsyncComponent.class);
         if(registrations == null || registrations.isEmpty()){
             return false;
         }
 
         return registrations.values().stream().anyMatch(dependency ->
-                referenceClass.equals(dependency.getDependencyClass())
-                        && qualifier.equals(dependency.getQualifier())
+                qualifier.equals(dependency.getQualifier())
+                        && (referenceClass.equals(dependency.getDependencyClass())
+                                || matchesGenerically(requested, dependency))
         );
     }
 
@@ -2159,11 +2439,14 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         boolean disableWarn = desableAllWarn || isInjectionWarnDisabled(parameter, instance);
 
         if(paramtrizedObject.isParametrized()){
-            return getParamObject(paramtrizedObject.getBaseClass(), paramtrizedObject.getParamType(), parameter, false, instance, disableWarn);
+            return getParamObject(paramtrizedObject.getBaseClass(), paramtrizedObject.getParamType(), parameter, true, instance, disableWarn);
         }else{
-            return getDependency(paramtrizedObject.getBaseClass(), () -> {
-                return !disableWarn;
-            }, describeInjectionOrigin(parameter, instance));
+            return resolveDependency(
+                    paramtrizedObject.getDeclaredType(),
+                    getQualifierName(parameter),
+                    () -> !disableWarn,
+                    describeInjectionOrigin(parameter, instance)
+            );
         }
     }
 
@@ -2174,7 +2457,12 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         if(paramtrizedObject.isParametrized()){
             return getParamObject(paramtrizedObject.getBaseClass(), paramtrizedObject.getParamType(), variable, true, instance, disableWarn);
         }else{
-            return getDependency(paramtrizedObject.getBaseClass(), () -> !disableWarn, describeInjectionOrigin(variable, instance));
+            return resolveDependency(
+                    paramtrizedObject.getDeclaredType(),
+                    getQualifierName(variable),
+                    () -> !disableWarn,
+                    describeInjectionOrigin(variable, instance)
+            );
         }
     }
 
@@ -2194,44 +2482,51 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
 
         if (AsyncComponent.class.equals(rawType)) {
-            Type innerType = (genericType instanceof ParameterizedType pt)
-                    ? pt.getActualTypeArguments()[0]
-                    : genericType;
+            validateTerminalType(rawType, genericType, instance);
+            return wrapInContainer(rawType, null, extractRawClass(genericType), genericType, qualifier, warn);
+        }
 
-            validateTerminalType(rawType, innerType, instance);
-            return wrapInContainer(rawType, null, extractRawClass(innerType), qualifier, warn);
+        if (WrapperTypes.isBeanCollection(rawType) || CompositeDependency.class.equals(rawType)) {
+            return wrapInContainer(rawType, null, extractRawClass(genericType), genericType, qualifier, warn);
         }
 
         Object innerObject = resolveNestedObject(genericType, element, qualifier, instance, warn);
-        return wrapInContainer(rawType, innerObject, extractRawClass(genericType), qualifier, warn);
+        return wrapInContainer(rawType, innerObject, extractRawClass(genericType), genericType, qualifier, warn);
     }
 
     private Object resolveNestedObject(Type type, AnnotatedElement element, String qualifier, Object instance, boolean warn) {
         if (!(type instanceof ParameterizedType paramType)) {
-            return getDependency((Class<?>) type, qualifier, () -> warn, describeInjectionOrigin(element, instance));
+            return resolveDependency(type, qualifier, () -> warn, describeInjectionOrigin(element, instance));
         }
 
-        Class<?> nextRaw = (Class<?>) paramType.getRawType();
+        Class<?> nextRaw = extractRawClass(paramType);
+
+        if (!WrapperTypes.isWrapper(nextRaw)) {
+            return resolveDependency(type, qualifier, () -> warn, describeInjectionOrigin(element, instance));
+        }
+
         Type innerType = paramType.getActualTypeArguments()[0];
 
         if (AsyncComponent.class.equals(nextRaw)) {
             validateTerminalType(nextRaw, innerType, instance);
-            return wrapInContainer(nextRaw, null, (Class<?>) innerType, qualifier, warn);
+            return wrapInContainer(nextRaw, null, extractRawClass(innerType), innerType, qualifier, warn);
         }
 
         return getParamObject(nextRaw, innerType, element, false, instance, !warn);
     }
 
     private void validateTerminalType(Class<?> nextRaw, Type innerType, Object instance) {
-        if (innerType instanceof ParameterizedType) {
-            String whereError = (instance instanceof String s) ? s :
-                    (instance != null ? instance.getClass().getName() : "unknown");
-
-            throw new DependencyInjectionException(
-                    String.format("O tipo '%s' deve ser terminal. Não é permitido aninhamento dentro de AsyncComponent (Encontrado: %s) em: %s",
-                            nextRaw.getSimpleName(), innerType.getTypeName(), whereError)
-            );
+        if (!WrapperTypes.isWrapper(GenericTypes.raw(innerType))) {
+            return;
         }
+
+        String whereError = (instance instanceof String s) ? s :
+                (instance != null ? instance.getClass().getName() : "unknown");
+
+        throw new DependencyInjectionException(
+                String.format("Nao e permitido aninhar wrappers dentro de '%s' (Encontrado: %s) em: %s",
+                        nextRaw.getSimpleName(), innerType.getTypeName(), whereError)
+        );
     }
 
     private Class<?> extractRawClass(Type type) {
@@ -2245,6 +2540,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             Class<?> containerType,
             Object resolvedInner,
             Class<?> targetClass,
+            Type targetType,
             String qualifier,
             boolean warn
     ) {
@@ -2253,36 +2549,112 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
 
         if (containerType.equals(AsyncComponent.class)) {
-            return (resolvedInner instanceof AsyncComponent<?>) ? resolvedInner : getAsyncComponent(targetClass, qualifier, () -> warn);
+            return (resolvedInner instanceof AsyncComponent<?>) ? resolvedInner : getAsyncComponent(targetClass, targetType, qualifier, () -> warn);
         }
 
         if (containerType.equals(CompositeDependency.class)) {
-            List<?> list = getDependencyListSelf(targetClass);
-            return new CompositeDependencyStorage<>((list != null) ? list : List.of());
+            return new CompositeDependencyStorage<>(getDependencyListSelf(targetClass, targetType));
+        }
+
+        if (WrapperTypes.isBeanCollection(containerType)) {
+            List<?> beans = getDependencyListSelf(targetClass, targetType);
+            return containerType.equals(Set.class) ? new LinkedHashSet<>(beans) : new ArrayList<>(beans);
         }
 
         if (containerType.equals(AtomicReference.class)) return new AtomicReference<>(resolvedInner);
         if (containerType.equals(WeakReference.class)) return new WeakReference<>(resolvedInner);
         if (containerType.equals(SoftReference.class)) return new SoftReference<>(resolvedInner);
 
-        return resolvedInner;
+        throw new IllegalStateException("Tipo de wrapper nao suportado: " + containerType.getName());
+    }
+
+    private <T> List<T> getDependencyListSelf(Class<T> reference, Type elementType) {
+        List<Dependency> candidates = allCandidatesOf(reference);
+
+        boolean filterByGenericArgument = genericResolutionEnabled.get()
+                && elementType instanceof ParameterizedType
+                && !GenericTypes.hasWildcard(elementType);
+
+        return candidates.stream()
+                .filter(dependency -> !filterByGenericArgument || matchesGenerically(elementType, dependency))
+                .map(dependency -> castDependency(reference, dependency))
+                .filter(Objects::nonNull)
+                .toList();
+    }
+
+    private <T> T castDependency(Class<T> reference, Dependency dependency) {
+        try{
+            return reference.cast(dependency.getDependency());
+        }catch (Exception e){
+            log.error(
+                    "Falha ao converter dependencia. reference={}, dependencyClass={}, msg={}",
+                    reference.getName(),
+                    describeDependencyClass(dependency),
+                    e.getMessage(),
+                    e
+            );
+            return null;
+        }
     }
 
     private <T> AsyncComponent<T> getAsyncComponent(final Class<T> reference, final String qualifier, Supplier<Boolean> showWarnIfError){
+        return getAsyncComponent(reference, reference, qualifier, showWarnIfError);
+    }
+
+    private List<Dependency> asyncCandidates(Class<?> reference, Type requested, String qualifier){
+        List<Dependency> byQualifier = getDependencyMap(AsyncComponent.class)
+                .values()
+                .stream()
+                .filter(d -> d.getQualifier().equals(qualifier))
+                .toList();
+
+        boolean matchByGenericArgument = genericResolutionEnabled.get()
+                && requested instanceof ParameterizedType
+                && !GenericTypes.hasWildcard(requested);
+
+        if(matchByGenericArgument){
+            List<Dependency> genericMatches = byQualifier.stream()
+                    .filter(d -> matchesGenerically(requested, d))
+                    .toList();
+
+            if(!genericMatches.isEmpty()) return genericMatches;
+        }
+
+        return byQualifier.stream()
+                .filter(d -> reference.equals(d.getDependencyClass()) || matchesGenerically(requested, d))
+                .toList();
+    }
+
+    private <T> AsyncComponent<T> getAsyncComponent(
+            final Class<T> reference,
+            final Type requested,
+            final String qualifier,
+            Supplier<Boolean> showWarnIfError
+    ){
         try{
-            final Map<String, Dependency> listOfDependency = getDependencyMap(AsyncComponent.class);
-            final Dependency dependencyObject = listOfDependency
-                    .values()
-                    .stream()
-                    .filter(d -> d.getQualifier().equals(qualifier))
-                    .filter(d -> reference.equals(d.getDependencyClass()))
-                    .findFirst()
-                    .orElseThrow(() -> {
-                return new DependencyInjectionException("Erro ao obter dependência: reference="+reference+", qualifier="+qualifier);
-            });
+            final List<Dependency> candidates = asyncCandidates(reference, requested, qualifier);
+
+            if(candidates.isEmpty()){
+                throw new DependencyInjectionException(
+                        "Erro ao obter dependência: reference="+requested+", qualifier="+qualifier
+                );
+            }
+
+            final Dependency dependencyObject = (candidates.size() == 1)
+                    ? candidates.getFirst()
+                    : applyAmbiguityPolicy(
+                            requested,
+                            qualifier,
+                            candidates.stream().map(Dependency::getDependencyClass).filter(Objects::nonNull).toList(),
+                            describeAsyncOrigin(requested),
+                            candidates.getFirst()
+                    );
+
+            if(dependencyObject == null) return null;
+
             Object asyncComponentObject = dependencyObject.getDependency();
             if(asyncComponentObject instanceof AsyncComponent<?> asyncComponent){
-                return asyncComponent.getReferenceClass().equals(reference) ? (AsyncComponent<T>) asyncComponent : null;
+                return (AsyncComponent<T>) asyncComponent;
             }
 
             if(showWarnIfError == null) showWarnIfError = () -> true;
@@ -2303,31 +2675,23 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     
     
     private ParamtrizedObject extractType(Field field){
-        Class<?> fieldType = field.getType();
-        Type genericType = field.getGenericType();
-
-        if (genericType instanceof ParameterizedType paramType) {
-            Type[] typeArgs = paramType.getActualTypeArguments();
-            if (typeArgs.length == 1 && (typeArgs[0] instanceof Class || typeArgs[0] instanceof ParameterizedType)) {
-                return new ParamtrizedObject(fieldType, typeArgs[0], true);
-            }
-        }
-
-        return new ParamtrizedObject(fieldType, fieldType, false);
+        return extractType(field.getType(), field.getGenericType());
     }
 
     private ParamtrizedObject extractType(Parameter parameter){
-        Class<?> fieldType = parameter.getType();
-        Type genericType = parameter.getParameterizedType();
+        return extractType(parameter.getType(), parameter.getParameterizedType());
+    }
 
+    private ParamtrizedObject extractType(Class<?> rawType, Type genericType){
         if (genericType instanceof ParameterizedType paramType) {
             Type[] typeArgs = paramType.getActualTypeArguments();
-            if (typeArgs.length == 1 && (typeArgs[0] instanceof Class || typeArgs[0] instanceof ParameterizedType)) {
-                return new ParamtrizedObject(fieldType, typeArgs[0], true);
+            if (WrapperTypes.isWrapper(rawType) && typeArgs.length == 1) {
+                return new ParamtrizedObject(rawType, typeArgs[0], true, genericType);
             }
+            return new ParamtrizedObject(rawType, genericType, false, genericType);
         }
 
-        return new ParamtrizedObject(fieldType, fieldType, false);
+        return new ParamtrizedObject(rawType, rawType, false, rawType);
     }
 
 
@@ -2349,7 +2713,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 Object target = getDependencyObjectByField(variable, instance);
                 variable.set(instance, target);
             }else{
-                Object targetInstance = getObjectToInjectVariable(variable, paramtrizedObject.getBaseClass());
+                Object targetInstance = getObjectToInjectVariable(variable, paramtrizedObject, instance);
                 variable.set(instance, targetInstance);
             }
 
@@ -2379,49 +2743,242 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         return targetClass != null && targetClass.isAnnotationPresent(DisableInjectionWarn.class);
     }
 
-    private Object getObjectToInjectVariable(Field variable, Class<?> clazzVariable) throws Exception{
+    private Object getObjectToInjectVariable(Field variable, ParamtrizedObject paramtrizedObject, Object instance) throws Exception{
+        final Class<?> clazzVariable = paramtrizedObject.getBaseClass();
         final String qualifierName = getQualifierName(variable);
-        Map<String, Dependency> mapOfDependency = getDependencyMap(clazzVariable);
-        if(mapOfDependency.isEmpty() && childrenRegistration){
+
+        if(getDependencyMap(clazzVariable).isEmpty() && childrenRegistration){
             try {
                 registerDependency(clazzVariable);
             } catch (InvalidClassRegistrationException e) {
                 throw new DependencyContainerRuntimeException(e);
             }
-            mapOfDependency = getDependencyMap(clazzVariable);
         }
-        Dependency dependencyObject = resolveWithPrimary(clazzVariable, mapOfDependency, qualifierName);
+
+        Dependency dependencyObject = findDependency(
+                paramtrizedObject.getDeclaredType(),
+                qualifierName,
+                describeInjectionOrigin(variable, instance)
+        );
+
         if(dependencyObject == null){
-            throw new DependencyContainerException("Dependencia não encontrada para: "+clazzVariable);
+            throw new DependencyContainerException("Dependencia nao encontrada para: "+clazzVariable);
         }
         return dependencyObject.getDependency();
     }
 
-    /**
-     * Resolve uma dependência respeitando {@link dtm.di.annotations.Primary}.
-     *
-     * Quando o qualificador é o "default" (injeção sem {@code @Qualifier}) e há vários candidatos,
-     * a entrada anotada com {@code @Primary} vence sobre a registrada como "default".
-     * Para qualificadores explícitos, mantém o lookup direto.
-     */
     private static final String PRIMARY_QUALIFIER_PREFIX = "$primary$:";
 
     private Dependency resolveWithPrimary(Class<?> reference, Map<String, Dependency> map, String qualifier){
         if(map == null || map.isEmpty()) return null;
-        boolean isDefaultLookup = qualifier == null || qualifier.isEmpty() || "default".equalsIgnoreCase(qualifier);
-        if(isDefaultLookup){
+        if(isDefaultQualifier(qualifier)){
             Dependency primary = primaryDependencyIndex.get(reference);
             if(primary != null) return primary;
         }
         Dependency direct = map.get(qualifier);
         if(direct != null) return direct;
-        if(AsyncComponent.class.equals(reference)){
-            List<Dependency> matches = map.values().stream()
-                    .filter(dependency -> qualifier.equals(dependency.getQualifier()))
-                    .toList();
-            return (matches.size() == 1) ? matches.getFirst() : null;
+        return resolveSingleAsyncComponent(reference, map, qualifier);
+    }
+
+    private Dependency resolveSingleAsyncComponent(Class<?> reference, Map<String, Dependency> map, String qualifier){
+        if(!AsyncComponent.class.equals(reference)) return null;
+
+        List<Dependency> matches = map.values().stream()
+                .filter(dependency -> qualifier.equals(dependency.getQualifier()))
+                .toList();
+        return (matches.size() == 1) ? matches.getFirst() : null;
+    }
+
+    private boolean isDefaultQualifier(String qualifier){
+        return qualifier == null || qualifier.isEmpty() || "default".equalsIgnoreCase(qualifier);
+    }
+
+    private Dependency findDependency(Type requested, String qualifier, String origin){
+        Class<?> reference = GenericTypes.raw(requested);
+        if(reference == null) return null;
+
+        Map<String, Dependency> map = getDependencyMap(reference);
+        boolean defaultLookup = isDefaultQualifier(qualifier);
+
+        if(!defaultLookup){
+            Dependency explicit = map.get(qualifier);
+            if(explicit != null){
+                reportGenericMismatch(requested, explicit, qualifier, origin);
+                return explicit;
+            }
         }
+
+        if(genericResolutionEnabled.get() && requested instanceof ParameterizedType){
+            Dependency generic = resolveByGenericType(requested, qualifier, origin, map);
+            if(generic != null) return generic;
+        }
+
+        if(map.isEmpty()) return null;
+
+        if(defaultLookup){
+            Dependency primary = primaryDependencyIndex.get(reference);
+            if(primary != null) return primary;
+        }
+
+        Dependency direct = map.get(qualifier);
+        if(direct != null){
+            if(defaultLookup && isContestedSlot(reference, qualifier)){
+                return applyAmbiguityPolicy(requested, qualifier, claimantsOf(reference, qualifier), origin, direct);
+            }
+            return direct;
+        }
+
+        return resolveSingleAsyncComponent(reference, map, qualifier);
+    }
+
+    private Dependency resolveByGenericType(Type requested, String qualifier, String origin, Map<String, Dependency> map){
+        if(!GenericTypes.hasWildcard(requested)){
+            Map<String, Dependency> slot = genericDependencyIndex.get(GenericTypes.key(requested));
+            if(slot == null || slot.isEmpty()) return null;
+
+            Dependency exact = slot.get(qualifier);
+            if(exact != null) return exact;
+
+            if(isDefaultQualifier(qualifier) && slot.size() == 1){
+                return slot.values().iterator().next();
+            }
+            return null;
+        }
+
+        Class<?> reference = GenericTypes.raw(requested);
+
+        List<Dependency> matches = genericCandidates(reference, qualifier, map).stream()
+                .filter(dependency -> matchesGenerically(requested, dependency))
+                .toList();
+
+        if(matches.isEmpty()) return null;
+        if(matches.size() == 1) return matches.getFirst();
+
+        if(isDefaultQualifier(qualifier)){
+            Dependency primary = primaryDependencyIndex.get(reference);
+            if(primary != null && matches.contains(primary)) return primary;
+        }
+
+        List<Class<?>> candidates = matches.stream()
+                .map(Dependency::getDependencyClass)
+                .filter(Objects::nonNull)
+                .toList();
+
+        return applyAmbiguityPolicy(requested, qualifier, candidates, origin, matches.getFirst());
+    }
+
+    private List<Dependency> genericCandidates(Class<?> reference, String qualifier, Map<String, Dependency> rawRegistrations){
+        if(reference == null) return List.of();
+
+        Set<Dependency> candidates = Collections.newSetFromMap(new IdentityHashMap<>());
+
+        genericIndexSlotsOf(reference)
+                .map(slot -> slot.get(qualifier))
+                .filter(Objects::nonNull)
+                .forEach(candidates::add);
+
+        Dependency rawCandidate = rawRegistrations.get(qualifier);
+        if(rawCandidate != null) candidates.add(rawCandidate);
+
+        return List.copyOf(candidates);
+    }
+
+    private Stream<Map<String, Dependency>> genericIndexSlotsOf(Class<?> reference){
+        String prefix = reference.getName() + "<";
+        return genericDependencyIndex.entrySet().stream()
+                .filter(entry -> entry.getKey().startsWith(prefix))
+                .map(Map.Entry::getValue);
+    }
+
+    private List<Dependency> allCandidatesOf(Class<?> reference){
+        if(reference == null) return List.of();
+
+        Set<Dependency> candidates = Collections.newSetFromMap(new IdentityHashMap<>());
+        candidates.addAll(getDependencyMap(reference).values());
+        genericIndexSlotsOf(reference).flatMap(slot -> slot.values().stream()).forEach(candidates::add);
+
+        return List.copyOf(candidates);
+    }
+
+    private boolean declaresGenericSupertype(Type requested, Class<?> serviceClass){
+        return GenericTypes.supertypes(serviceClass).stream()
+                .anyMatch(candidate -> GenericTypes.matches(requested, candidate));
+    }
+
+    private boolean matchesGenerically(Type requested, Dependency dependency){
+        return dependency.getGenericSupertypes().stream()
+                .anyMatch(candidate -> GenericTypes.matches(requested, candidate));
+    }
+
+    private void reportGenericMismatch(Type requested, Dependency resolved, String qualifier, String origin){
+        if(!genericResolutionEnabled.get()) return;
+        if(!(requested instanceof ParameterizedType)) return;
+        if(GenericTypes.hasWildcard(requested)) return;
+
+        Class<?> reference = GenericTypes.raw(requested);
+        if(reference == null) return;
+
+        boolean declaresSameRawGenerically = resolved.getGenericSupertypes().stream()
+                .anyMatch(candidate -> reference.equals(GenericTypes.raw(candidate))
+                        && GenericTypes.isFullyResolved(GenericTypes.key(candidate)));
+
+        if(!declaresSameRawGenerically || matchesGenerically(requested, resolved)) return;
+
+        String message = "Bean " + describeDependencyClass(resolved) + " selecionado pelo qualifier "
+                + qualifier + " nao corresponde ao tipo generico " + requested.getTypeName()
+                + ((origin != null && !origin.isBlank()) ? (". Origem: " + origin) : "");
+
+        if(ambiguityPolicy.get() == AmbiguityPolicy.FAIL_FAST){
+            throw new DependencyInjectionException(message);
+        }
+
+        log.warn(message);
+    }
+
+    private Dependency applyAmbiguityPolicy(
+            Type requested,
+            String qualifier,
+            List<Class<?>> candidates,
+            String origin,
+            Dependency fallback
+    ){
+        AmbiguityPolicy policy = ambiguityPolicy.get();
+        if(policy == AmbiguityPolicy.SILENT) return fallback;
+
+        AmbiguousDependencyException error = new AmbiguousDependencyException(requested, qualifier, candidates, origin);
+        if(policy == AmbiguityPolicy.FAIL_FAST) throw error;
+
+        log.error(error.getMessage());
         return null;
+    }
+
+    private Object resolveDependency(Type requested, String qualifier, Supplier<Boolean> showWarnIfError, String origin){
+        try{
+            Dependency dependencyObject = findDependency(requested, qualifier, origin);
+            if(dependencyObject == null){
+                throw new DependencyInjectionException(
+                        "Erro ao obter dependencia: reference=" + requested + ", qualifier=" + qualifier
+                );
+            }
+            return dependencyObject.getDependency();
+        }catch (AmbiguousDependencyException e){
+            throw e;
+        }catch (Exception e){
+            Supplier<Boolean> warnSupplier = (showWarnIfError != null) ? showWarnIfError : () -> true;
+
+            if(Boolean.TRUE.equals(warnSupplier.get())){
+                log.error(
+                        "Erro ao obter dependencia: reference={}, qualifier={}, origem={}, msg={}",
+                        requested,
+                        qualifier,
+                        origin,
+                        e.getMessage(),
+                        e
+                );
+            }
+
+            return null;
+        }
     }
 
     private void registerExternalBeenNoSinglenton(
@@ -2441,7 +2998,12 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                         null
                 );
             }
-            ServiceBean serviceBean = new ServiceBean(beenClass, 0, isAopEnabled(instance.getClass()));
+            ServiceBean serviceBean = new ServiceBean(
+                    beenClass,
+                    0,
+                    isAopEnabled(instance.getClass()),
+                    (method != null) ? method.getGenericReturnType() : null
+            );
 
             loadBeen(serviceBean, new HashSet<>(), qualifier, registration);
         }catch (NoSuchMethodException e) {
@@ -2495,13 +3057,23 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             boolean aop,
             ExternalComponentRegistration registration
     ) throws InvalidClassRegistrationException {
+        registerObject(dependency, qualifier, aop, registration, null);
+    }
+
+    private void registerObject(
+            @NonNull Object dependency,
+            @NonNull String qualifier,
+            boolean aop,
+            ExternalComponentRegistration registration,
+            Type declaredGenericType
+    ) throws InvalidClassRegistrationException {
         try {
             final Class<?> clazz = dependency.getClass();
             if(!isProfileActive(clazz)) return;
             if(dependencyContainer.containsKey(clazz)) return;
             final Object toRegistrate = aop ? proxyObject(dependency, clazz) : dependency;
             final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(clazz, qualifier);
-            DependencyObject dependencyObject = new DependencyObject(clazz, qualifier, true, () -> {return toRegistrate;}, toRegistrate);
+            DependencyObject dependencyObject = new DependencyObject(clazz, qualifier, true, () -> {return toRegistrate;}, toRegistrate, declaredGenericType);
             registerInContainer(
                     mapOfDependency,
                     clazz,
@@ -2528,6 +3100,24 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             Boolean isAop,
             ExternalComponentRegistration registration
     ){
+        registerObjectFunction(registrationFunction, isAop, registration, null);
+    }
+
+    private Type producedGenericType(Method method){
+        Type returnType = method.getGenericReturnType();
+        if(returnType instanceof ParameterizedType parameterized){
+            Type[] arguments = parameterized.getActualTypeArguments();
+            if(arguments.length == 1) return arguments[0];
+        }
+        return null;
+    }
+
+    private void registerObjectFunction(
+            @NonNull RegistrationFunction<?> registrationFunction,
+            Boolean isAop,
+            ExternalComponentRegistration registration,
+            Type declaredGenericType
+    ){
         final Class<?> referenceClass = registrationFunction.getReferenceClass();
         final String qualifier = (registrationFunction.getQualifier().isEmpty()) ? "default" : registrationFunction.getQualifier();
         if(!isProfileActive(referenceClass)) return;
@@ -2546,7 +3136,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
             if(dependencyContainer.containsKey(referenceClass)) return;
             final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(referenceClass, qualifier);
-            DependencyObject dependencyObject = new DependencyObject(referenceClass, qualifier, false, activatorFunction, activatorFunction);
+            DependencyObject dependencyObject = new DependencyObject(referenceClass, qualifier, false, activatorFunction, activatorFunction, declaredGenericType);
             registerInContainer(
                     mapOfDependency,
                     referenceClass,
@@ -2565,13 +3155,22 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private void registerObjectFunction(@NonNull AsyncRegistrationFunction<?> asyncRegistrationFunction, Boolean isAop){
-        registerObjectFunction(asyncRegistrationFunction, isAop, null);
+        registerObjectFunction(asyncRegistrationFunction, isAop, null, null);
     }
 
     private void registerObjectFunction(
             @NonNull AsyncRegistrationFunction<?> asyncRegistrationFunction,
             Boolean isAop,
             ExternalComponentRegistration registration
+    ){
+        registerObjectFunction(asyncRegistrationFunction, isAop, registration, null);
+    }
+
+    private void registerObjectFunction(
+            @NonNull AsyncRegistrationFunction<?> asyncRegistrationFunction,
+            Boolean isAop,
+            ExternalComponentRegistration registration,
+            Type declaredGenericType
     ){
         final Class<?> referenceClass = asyncRegistrationFunction.getReferenceClass();
         final String qualifier = (asyncRegistrationFunction.getQualifier().isEmpty()) ? "default" : asyncRegistrationFunction.getQualifier();
@@ -2596,17 +3195,19 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
               return new AsyncComponentStorage<>(referenceClass, qualifier, resolveComponentAsync);
             };
 
-            String registrationKey = asyncRegistrationKey(referenceClass, qualifier);
+            String registrationKey = asyncRegistrationKey(referenceClass, qualifier, declaredGenericType);
+            if(getDependencyMap(AsyncComponent.class).containsKey(registrationKey)){
+                return;
+            }
+
             final Map<String, Dependency> mapOfDependency = getDependencyMapAndValidDependency(
                     AsyncComponent.class,
                     registrationKey,
                     referenceClass
             );
-            if(mapOfDependency.values().stream().anyMatch(d ->
-                    d.getDependencyClass().equals(referenceClass) && d.getQualifier().equals(qualifier))){
-                return;
-            }
-            DependencyObject dependencyObject = new DependencyObject(referenceClass, qualifier, false, activatorFunction, activatorFunction);
+            DependencyObject dependencyObject = new DependencyObject(
+                    referenceClass, qualifier, false, activatorFunction, activatorFunction, declaredGenericType
+            );
 
             registerInContainer(
                     mapOfDependency,
@@ -2666,8 +3267,83 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         indexPrimary(classToRegister, dependencyObject, qualifier, registration);
         listOfDependency.put(qualifier, dependencyObject);
         dependencyContainer.put(classToRegister, listOfDependency);
+        trackAliasClaim(classToRegister, qualifier, dependencyObject);
         trackExternalSlot(registration, classToRegister, qualifier, dependencyObject);
+        indexGenericTypes(classToRegister, dependencyObject, qualifier, registration);
         if(registerSubTypes)registerSubTypes(classToRegister, dependencyObject, qualifier, registration);
+    }
+
+    private void indexGenericTypes(
+            Class<?> classToRegister,
+            DependencyObject dependencyObject,
+            String qualifier,
+            ExternalComponentRegistration registration
+    ){
+        if(!genericResolutionEnabled.get()) return;
+        if(AsyncComponent.class.equals(classToRegister)) return;
+
+        for(String genericKey : dependencyObject.getGenericTypeKeys()){
+            if(!GenericTypes.isFullyResolved(genericKey)) continue;
+
+            Map<String, Dependency> slot = genericDependencyIndex.computeIfAbsent(
+                    genericKey,
+                    ignored -> new ConcurrentHashMap<>()
+            );
+
+            Dependency previous = slot.putIfAbsent(qualifier, dependencyObject);
+            if(previous != null && previous != dependencyObject){
+                log.warn(
+                        "Mais de um bean registrado para o tipo generico {} com qualifier '{}': {} e {}.",
+                        genericKey,
+                        qualifier,
+                        describeDependencyClass(previous),
+                        describeDependencyClass(dependencyObject)
+                );
+                continue;
+            }
+
+            if(registration != null && previous == null){
+                registration.addGenericSlot(new GenericRegistrationSlot(genericKey, qualifier, dependencyObject));
+            }
+        }
+    }
+
+    private String describeDependencyClass(Dependency dependency){
+        Class<?> dependencyClass = (dependency != null) ? dependency.getDependencyClass() : null;
+        return (dependencyClass != null) ? dependencyClass.getName() : "desconhecido";
+    }
+
+    private void removeGenericIndexEntries(Dependency dependencyObject){
+        if(dependencyObject == null) return;
+
+        for(String genericKey : dependencyObject.getGenericTypeKeys()){
+            Map<String, Dependency> slot = genericDependencyIndex.get(genericKey);
+            if(slot == null) continue;
+
+            slot.values().removeIf(candidate -> candidate == dependencyObject);
+            if(slot.isEmpty()){
+                genericDependencyIndex.remove(genericKey, slot);
+            }
+        }
+    }
+
+    private void removeGenericRegistrationSlot(GenericRegistrationSlot slot){
+        Map<String, Dependency> registrations = genericDependencyIndex.get(slot.genericKey());
+        if(registrations == null) return;
+
+        registrations.remove(slot.qualifier(), slot.dependency());
+
+        if(registrations.isEmpty()){
+            genericDependencyIndex.remove(slot.genericKey(), registrations);
+        }
+    }
+
+    private void removeAliasClaims(Dependency dependencyObject){
+        Class<?> claimant = (dependencyObject != null) ? dependencyObject.getDependencyClass() : null;
+        if(claimant == null) return;
+
+        contestedAliases.values().forEach(claimants -> claimants.remove(claimant));
+        contestedAliases.values().removeIf(Set::isEmpty);
     }
 
     private void indexPrimary(
@@ -2711,6 +3387,16 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private String asyncRegistrationKey(Class<?> referenceClass, String qualifier){
+        return asyncRegistrationKey(referenceClass, qualifier, null);
+    }
+
+    private String asyncRegistrationKey(Class<?> referenceClass, String qualifier, Type declaredGenericType){
+        if(declaredGenericType != null && genericResolutionEnabled.get()){
+            String genericKey = GenericTypes.key(declaredGenericType);
+            if(GenericTypes.isFullyResolved(genericKey)){
+                return qualifier + "|" + genericKey;
+            }
+        }
         return qualifier + "|" + referenceClass.getName();
     }
 
@@ -2741,24 +3427,47 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         if (clazz.equals(Object.class) || clazz.isInterface()) {
             return;
         }
+
+        Set<Class<?>> visited = new LinkedHashSet<>();
+
+        for(Class<?> interfaceObj : clazz.getInterfaces()){
+            registerInterfaceAliases(interfaceObj, dependencyObject, qualifier, registration, visited);
+        }
+
+        if(clazz.isAnnotationPresent(ExcludeRootRegistration.class)){
+            return;
+        }
+
         Class<?> superClass = clazz.getSuperclass();
-        Class<?>[] interfaces = clazz.getInterfaces();
+        while(superClass != null && !superClass.equals(Object.class) && !superClass.isInterface()){
+            if(!visited.add(superClass)) break;
 
-        if (
-                superClass != null &&
-                !superClass.equals(Object.class) &&
-                !superClass.isInterface() &&
-                !clazz.isAnnotationPresent(ExcludeRootRegistration.class)
-        ) {
             registerAlias(superClass, dependencyObject, qualifier, registration);
-        }
 
-        for(Class<?> interfaceObj : interfaces){
-            if (!interfaceObj.equals(Object.class)) {
-                registerAlias(interfaceObj, dependencyObject, qualifier, registration);
+            for(Class<?> interfaceObj : superClass.getInterfaces()){
+                registerInterfaceAliases(interfaceObj, dependencyObject, qualifier, registration, visited);
             }
+
+            superClass = superClass.getSuperclass();
+        }
+    }
+
+    private void registerInterfaceAliases(
+            Class<?> interfaceObj,
+            @NonNull DependencyObject dependencyObject,
+            @NonNull String qualifier,
+            ExternalComponentRegistration registration,
+            Set<Class<?>> visited
+    ){
+        if(interfaceObj == null || interfaceObj.equals(Object.class) || !visited.add(interfaceObj)){
+            return;
         }
 
+        registerAlias(interfaceObj, dependencyObject, qualifier, registration);
+
+        for(Class<?> parent : interfaceObj.getInterfaces()){
+            registerInterfaceAliases(parent, dependencyObject, qualifier, registration, visited);
+        }
     }
 
     private void registerAlias(
@@ -2772,6 +3481,8 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
                 ignored -> new ConcurrentHashMap<>()
         );
 
+        trackAliasClaim(indexedType, qualifier, dependencyObject);
+
         if(registration == null){
             registrations.put(qualifier, dependencyObject);
             return;
@@ -2782,6 +3493,37 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             trackExternalSlot(registration, indexedType, qualifier, dependencyObject);
         }
     }
+
+    private void trackAliasClaim(Class<?> indexedType, String qualifier, Dependency dependencyObject){
+        Class<?> claimant = dependencyObject.getDependencyClass();
+        if(claimant == null) return;
+
+        Set<Class<?>> claimants = contestedAliases.computeIfAbsent(
+                new AliasSlot(indexedType, qualifier),
+                ignored -> ConcurrentHashMap.newKeySet()
+        );
+
+        if(claimants.add(claimant) && claimants.size() == 2){
+            log.warn(
+                    "Mais de um bean registrado para {} com qualifier '{}': {}. Use @Qualifier, @Primary ou um tipo generico mais especifico.",
+                    indexedType.getName(),
+                    qualifier,
+                    claimants.stream().map(Class::getName).sorted().collect(Collectors.joining(", "))
+            );
+        }
+    }
+
+    private boolean isContestedSlot(Class<?> indexedType, String qualifier){
+        Set<Class<?>> claimants = contestedAliases.get(new AliasSlot(indexedType, qualifier));
+        return claimants != null && claimants.size() > 1;
+    }
+
+    private List<Class<?>> claimantsOf(Class<?> indexedType, String qualifier){
+        Set<Class<?>> claimants = contestedAliases.get(new AliasSlot(indexedType, qualifier));
+        return (claimants != null) ? List.copyOf(claimants) : List.of();
+    }
+
+    private record AliasSlot(Class<?> indexedType, String qualifier) {}
 
     private Object proxyObject(Object realInstance, Class<?> clazz){
         try{
@@ -3045,22 +3787,23 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private <T> T getDependency(Class<T> reference, String qualifier, Supplier<Boolean> showWarnIfError, String origin) {
         try{
-            final Map<String, Dependency> listOfDependency = getDependencyMap(reference);
-            final Dependency dependencyObject = resolveWithPrimary(reference, listOfDependency, qualifier);
-
-            if(dependencyObject == null){
-                throw new DependencyInjectionException("Erro ao obter dependência: reference="+reference+", qualifier="+qualifier);
-            }
-            Object instance = dependencyObject.getDependency();
-            return reference.cast(instance);
+            Object instance = resolveDependency(reference, qualifier, showWarnIfError, origin);
+            return (instance != null) ? reference.cast(instance) : null;
+        }catch (AmbiguousDependencyException e){
+            throw e;
         }catch (Exception e){
-            if(showWarnIfError == null) showWarnIfError = () -> true;
+            Supplier<Boolean> warnSupplier = (showWarnIfError != null) ? showWarnIfError : () -> true;
 
-            Boolean showWarn = showWarnIfError.get();
-            if(Boolean.TRUE.equals(showWarn)) log.error("Erro ao obter dependência: reference={}, qualifier={}, origem={}, msg={}", reference.getName(), qualifier, origin, e.getMessage(), e);
+            if(Boolean.TRUE.equals(warnSupplier.get())){
+                log.error("Erro ao obter dependencia: reference={}, qualifier={}, origem={}, msg={}", reference.getName(), qualifier, origin, e.getMessage(), e);
+            }
 
             return null;
         }
+    }
+
+    private String describeAsyncOrigin(Type requested){
+        return "AsyncComponent<" + ((requested != null) ? requested.getTypeName() : "?") + ">";
     }
 
     private String describeInjectionOrigin(AnnotatedElement element, Object instance) {

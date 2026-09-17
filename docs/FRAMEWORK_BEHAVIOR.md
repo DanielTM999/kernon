@@ -229,8 +229,8 @@ A ordem de construtores devolvida por reflexão não é um contrato. Para previs
 - use `@Value` no parâmetro para settings;
 - use `@Qualifier("nome")` para escolher uma implementação.
 
-`@Inject(qualifier = "...")` em parâmetro não participa da escolha de qualifier no caminho
-atual. Em campos, `@Qualifier` tem precedência sobre `@Inject.qualifier`.
+`@Inject(qualifier = "...")` vale em campo e em parâmetro, com `@Qualifier` tendo precedência
+sobre ele nos dois casos.
 
 ### Ordem dentro do objeto
 
@@ -266,6 +266,22 @@ Precedência da configuração:
 Uma chamada programática com `null` significa `ADAPTIVE` e ainda bloqueia a configuração
 declarativa. Valor declarativo desconhecido gera warning e usa `ADAPTIVE`.
 
+`dependencyContainer.ambiguityPolicy`, `dependencyContainer.genericResolution` e
+`dependencyContainer.prototypeListenerPolicy` seguem a mesma precedência: o setter correspondente
+chamado antes de `load()` ganha dos settings, que ganham do padrão (`FAIL_FAST`, `true` e `SKIP`).
+Valor declarativo desconhecido gera warning e cai no padrão.
+
+`prototypeListenerPolicy` decide o que fazer com um bean prototype marcado com `@Event` no scan
+inicial, já que ele não tem instância única:
+
+| Valor | Comportamento |
+|---|---|
+| `SKIP` (padrão) | não registra e emite WARN |
+| `SKIP_SILENT` | não registra, sem aviso |
+| `REGISTER` | registra uma instância dedicada do scan; os eventos chegam nela, não nas instâncias resolvidas depois |
+
+Use `REGISTER` apenas para listener de ação isolada e sem estado compartilhado.
+
 ### Falta de dependência
 
 Os lookups internos e públicos tendem a registrar o erro e retornar `null`:
@@ -281,46 +297,100 @@ Portanto, uma referência não nula após o boot deve ser validada pela aplicaç
 
 ## Ordem de resolução
 
-### Qualifier e primary
+### Qualifier, genérico e primary
 
-Para `getDependency(Tipo.class, qualifier)`:
+Para um ponto de injeção de tipo `T` com qualifier `q`:
 
-1. o mapa do tipo indexado é obtido;
-2. se o qualifier é vazio ou `default`, o índice de `@Primary` é consultado;
-3. sem primary, é feita busca exata pelo qualifier;
-4. sem registro, o lookup falha e retorna `null` após log.
+1. qualifier explícito (diferente de `default`): busca exata no mapa do tipo cru;
+2. `T` parametrizado e totalmente resolvido: match exato no índice genérico;
+3. `T` parametrizado com wildcard: varredura dos candidatos compatíveis;
+4. qualifier vazio ou `default`: o índice de `@Primary` é consultado;
+5. busca exata pelo qualifier no mapa do tipo cru;
+6. sem registro, o lookup falha e retorna `null` após log.
 
 Consequências:
 
-- `@Primary` ganha até sobre um registro chamado `default` em lookup default;
-- qualifier explícito nunca cai para primary nem para outro qualifier;
+- qualifier explícito nunca cai para primary, para outro qualifier nem para o match genérico;
+- o match genérico exato ganha de `@Primary`, porque é mais específico;
+- `@Primary` ganha até sobre um registro chamado `default` em lookup cru;
 - dois primaries indexados para o mesmo tipo causam `InvalidClassRegistrationException`;
-- sem primary e sem entrada `default`, múltiplos beans qualificados não são escolhidos
-  automaticamente;
-- não há resolução “pelo único candidato” se o qualifier solicitado não existir.
+- quando restam vários candidatos, a política de ambiguidade decide (ver abaixo).
+
+### Resolução genérica
+
+Um bean também é indexado por cada supertipo genérico **totalmente resolvido** da sua
+hierarquia. A varredura é transitiva e substitui variáveis de tipo ao longo da cadeia:
+`class A extends Base<String>` com `Base<T> implements Processor<T>` indexa
+`Processor<java.lang.String>`.
+
+Com isso, duas implementações sem `@Qualifier` são distinguidas pelo argumento de tipo:
+
+```java
+@Component public class FooProcessor implements Processor<Foo> { }
+@Component public class BarProcessor implements Processor<Bar> { }
+
+@Component
+public class Consumer {
+    @Inject private Processor<Foo> foo;   // FooProcessor
+    @Inject private Processor<Bar> bar;   // BarProcessor
+}
+```
+
+Regras:
+
+- o match exato é **invariante**: `Processor<Foo>` não casa com `Processor<SubFoo>`;
+- `Processor<?>` e o tipo cru `Processor` aceitam qualquer especialização;
+- `Processor<? extends N>` casa `Processor<X>` quando `N` é supertipo de `X`;
+- `Processor<? super I>` casa `Processor<X>` quando `X` é supertipo de `I`;
+- uma implementação genérica aberta (`class Generic<T> implements Processor<T>`) não
+  produz chave resolvida e permanece apenas no índice cru;
+- produtores são indexados pelo **tipo de retorno declarado** do método, o que permite
+  `@Component public Processor<Foo> p() { return () -> ...; }` com lambda;
+- `CompositeDependency<Processor<Foo>>`, `List<Processor<Foo>>` e `Set<Processor<Foo>>`
+  trazem apenas os beans cujo argumento de tipo corresponde; com wildcard, trazem todos;
+- `AsyncComponent<T>` também é selecionado pelo argumento de tipo: `AsyncComponent<Processor<Foo>>`
+  resolve o produtor `@Async` que declara `Processor<Foo>`. Produtores `@Async` e classes `@Async`
+  entram nessa resolução, mas ficam **fora** do índice genérico compartilhado — um `@Inject
+  Processor<Foo>` comum nunca recebe o wrapper async.
+
+### Ambiguidade
+
+Quando mais de um candidato atende ao ponto de injeção e nada desempata, vale
+`dependencyContainer.ambiguityPolicy`:
+
+| Valor | Comportamento |
+|---|---|
+| `FAIL_FAST` (padrão) | lança `AmbiguousDependencyException` nomeando os candidatos e a origem da injeção |
+| `LOG` | registra o erro e devolve `null` |
+| `SILENT` | escolhe um candidato arbitrário, como nas versões anteriores |
+
+O erro é lançado na **injeção**, não no registro: registrar duas implementações da mesma
+interface continua válido (com WARN) e só falha se alguém injetar um alvo que fique
+genuinamente ambíguo.
 
 Em classes, use `@Qualifier` para nomear o registro. Os atributos
 `@Component(qualifier = ...)` e `@Service(qualifier = ...)` não são lidos pelo caminho de
 classe confirmado. Em métodos produtores, esses atributos são lidos.
 
-Não combine `@Qualifier` e `@Primary` no mesmo bean: em classes, qualifier é avaliado
-primeiro e impede a marcação primary. Em um produtor padrão anotado diretamente com
-`@Component` ou `@Service`, o qualifier dessa anotação é devolvido antes que
-`@Qualifier` ou `@Primary` sejam consultados. Portanto, nomeie o produtor pelo atributo
-`qualifier` de `@Component`/`@Service` e não use `@Primary` nesse produtor; prefira uma
-classe componente `@Primary`.
+Não combine `@Qualifier` e `@Primary` no mesmo bean: em classe e em produtor, o qualifier é
+avaliado primeiro e impede a marcação primary. Em produtor, a ordem é `@Qualifier`, depois o
+atributo `qualifier` de `@Component`/`@Service`, depois `@Primary`. Um `qualifier` explicitamente
+igual a `"default"` conta como não especificado e não bloqueia `@Primary`.
 
 ### Registro por tipo
 
 Um bean é indexado por:
 
 - sua classe concreta;
-- sua superclasse direta, se aplicável;
-- suas interfaces diretamente implementadas.
+- toda a cadeia de superclasses, até `Object`;
+- todas as interfaces implementadas, incluindo interfaces de interfaces;
+- cada supertipo genérico totalmente resolvido da sua hierarquia.
 
-Não há busca geral por distância na hierarquia. Aliases com o mesmo `(tipo, qualifier)`
-podem se sobrescrever durante registro automático, cuja execução por camada é paralela.
-Esse caso não possui vencedor estável: atribua qualifiers diferentes ou um primary único.
+Aliases com o mesmo `(tipo, qualifier)` ainda podem se sobrescrever durante o registro
+automático, cuja execução por camada é paralela, e esse caso não possui vencedor estável.
+A diferença é que o slot disputado passa a ser registrado e um WARN é emitido; uma injeção
+que caia nele aplica a política de ambiguidade em vez de escolher em silêncio. Quando as
+implementações diferem pelo argumento de tipo, o match genérico já resolve sem qualifier.
 
 Um objeto registrado manualmente antes de `load()` bloqueia o registro automático da
 mesma classe concreta. Isso não deve ser generalizado como prioridade para todo alias de
@@ -335,8 +405,23 @@ Campos e parâmetros podem usar wrappers reconhecidos pelo container:
 - `CompositeDependency<T>` para coleção de registros do tipo;
 - `AtomicReference<T>`, `WeakReference<T>` e `SoftReference<T>`.
 
-`AsyncComponent` deve terminar em um tipo concreto; aninhamento parametrizado dentro dele
-é rejeitado. Use os wrappers somente com um argumento de tipo reificável simples.
+- `List<T>`, `Set<T>` e `Collection<T>` para coleção de beans do tipo.
+
+Todos os wrappers aceitam um argumento parametrizado comum
+(`AsyncComponent<Processor<Foo>>`, `LazyDependency<Processor<Foo>>`). O que é rejeitado é
+**aninhar wrapper dentro de wrapper**: `AsyncComponent<AsyncComponent<T>>`,
+`AsyncComponent<LazyDependency<T>>` e `AsyncComponent<List<T>>` falham com
+`DependencyInjectionException`. Um tipo parametrizado que **não** esteja nessa lista é tratado como
+um bean comum e resolvido pelo argumento de tipo, não como wrapper.
+
+`@Qualifier` é lido tanto em campo quanto em parâmetro de construtor/produtor para esses wrappers.
+
+Para o acesso programático a um wrapper async genérico, use `TypeRef`:
+
+```java
+AsyncComponent<Processor<Foo>> component =
+        container.getDependencyAsync(new TypeRef<Processor<Foo>>() {}, true);
+```
 
 ## Configurações e beans produtores
 

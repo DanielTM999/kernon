@@ -2,6 +2,7 @@ package dtm.di.external;
 
 import dtm.di.event.EventPublisher;
 import dtm.di.exceptions.ExternalDependencyInUseException;
+import dtm.di.prototypes.Dependency;
 import dtm.di.prototypes.async.AsyncComponent;
 import dtm.di.storage.containers.DependencyContainerStorage;
 import dtm.di.testsupport.ContainerFixture;
@@ -164,6 +165,67 @@ class ExternalUnloadTest {
         assertFalse(ContainerFixture.primaryIndexOf(container).containsKey(reporter));
         assertFalse(ContainerFixture.primaryIndexOf(container).containsKey(classes.get(0)));
         assertNotNull(container.getDependency(reporter, "fallback"));
+    }
+
+    @Test
+    @DisplayName("24b. o indice generico e limpo ao descarregar o modulo externo")
+    void genericIndexIsClearedOnUnload() throws Exception {
+        List<Class<?>> classes = module.load(ExternalFixtures.STRING_HANDLER, ExternalFixtures.NUMBER_HANDLER);
+        container.loadExternal(classes);
+
+        Class<?> handler = module.load(ExternalFixtures.GENERIC_HANDLER);
+        String stringKey = handler.getName() + "<java.lang.String>";
+        String numberKey = handler.getName() + "<java.lang.Integer>";
+
+        assertTrue(ContainerFixture.genericIndexOf(container).containsKey(stringKey));
+        assertTrue(ContainerFixture.genericIndexOf(container).containsKey(numberKey));
+
+        container.unload(classes);
+
+        assertFalse(ContainerFixture.genericIndexOf(container).containsKey(stringKey));
+        assertFalse(ContainerFixture.genericIndexOf(container).containsKey(numberKey));
+    }
+
+    @Test
+    @DisplayName("24c. bean externo generico e resolvido pelo argumento declarado")
+    void externalGenericBeanIsResolvedByArgument() throws Exception {
+        List<Class<?>> classes = module.load(ExternalFixtures.STRING_HANDLER, ExternalFixtures.NUMBER_HANDLER);
+        container.loadExternal(classes);
+
+        Class<?> handler = module.load(ExternalFixtures.GENERIC_HANDLER);
+        String stringKey = handler.getName() + "<java.lang.String>";
+
+        Map<String, Dependency> slot = ContainerFixture.genericIndexOf(container).get(stringKey);
+
+        assertNotNull(slot);
+        assertEquals("string-handler", ContainerFixture.invoke(slot.get("default").getDependency(), "handle"));
+    }
+
+    @Test
+    @DisplayName("24d. produtores async genericos externos coexistem e somem no unload")
+    void externalAsyncGenericProducersAreIsolatedAndRemoved() throws Exception {
+        Class<?> configuration = module.load(ExternalFixtures.ASYNC_GENERIC_CONFIGURATION);
+        container.loadExternal(List.of(configuration));
+
+        Class<?> handler = module.load(ExternalFixtures.GENERIC_HANDLER);
+        Map<String, Dependency> asyncSlot = ContainerFixture.dependencyContainerOf(container)
+                .get(AsyncComponent.class);
+
+        assertNotNull(asyncSlot);
+        assertEquals(
+                2,
+                asyncSlot.values().stream().filter(d -> handler.equals(d.getDependencyClass())).count()
+        );
+
+        container.unload(List.of(configuration));
+
+        Map<String, Dependency> afterUnload = ContainerFixture.dependencyContainerOf(container)
+                .get(AsyncComponent.class);
+
+        assertTrue(
+                afterUnload == null
+                        || afterUnload.values().stream().noneMatch(d -> handler.equals(d.getDependencyClass()))
+        );
     }
 
     @Test

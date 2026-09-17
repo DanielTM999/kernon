@@ -50,4 +50,38 @@ public interface DependencyContainerConfigurator {
      */
     void setInjectionStrategy(InjectionStrategy strategy);
 
+    /**
+     * Define a politica aplicada quando mais de um bean candidato atende ao ponto de injecao.
+     *
+     * A configuracao programatica tem precedencia sobre a propriedade
+     * {@code dependencyContainer.ambiguityPolicy} dos settings.
+     *
+     * @param policy A politica a ser utilizada. {@code null} seleciona {@link AmbiguityPolicy#FAIL_FAST}.
+     */
+    void setAmbiguityPolicy(AmbiguityPolicy policy);
+
+    /**
+     * Habilita ou desabilita a resolucao de dependencias por tipo generico.
+     *
+     * Quando desabilitada, o container volta a resolver apenas pela classe crua e pelo qualifier.
+     * A configuracao programatica tem precedencia sobre a propriedade
+     * {@code dependencyContainer.genericResolution} dos settings.
+     */
+    void setGenericResolutionEnabled(boolean enabled);
+
+    /**
+     * Define o que fazer com um bean prototype marcado com {@code @Event} durante o scan inicial.
+     *
+     * Um listener prototype nao tem instancia unica: cada resolucao cria outra. O padrao
+     * {@link PrototypeListenerPolicy#SKIP} nao registra e emite um aviso.
+     * {@link PrototypeListenerPolicy#REGISTER} registra uma instancia dedicada do scan, util para
+     * listeners de acao isolada e sem estado compartilhado.
+     *
+     * A configuracao programatica tem precedencia sobre a propriedade
+     * {@code dependencyContainer.prototypeListenerPolicy} dos settings.
+     *
+     * @param policy A politica a ser utilizada. {@code null} seleciona {@link PrototypeListenerPolicy#SKIP}.
+     */
+    void setPrototypeListenerPolicy(PrototypeListenerPolicy policy);
+
 }

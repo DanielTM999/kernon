@@ -17,8 +17,25 @@ efeitos.
 | `@Inject` | campo ou parâmetro | campo é injetado; `qualifier` default é `default` | construtor não precisa de `@Inject`; em parâmetro use `@Qualifier` |
 | `@MainConstructor` | construtor | prefere esse construtor quando não há construtor vazio | marque no máximo um; construtor vazio ainda vence |
 | `@Profile` | tipo, método ou meta-anotação | ativo se algum valor coincidir com um profile selecionado | em produtor, é avaliado antes da montagem do grafo; classe e método precisam estar ativos |
-| `@ExcludeRootRegistration` | classe | não cria alias para a superclasse direta | aliases de interfaces continuam sendo registrados |
+| `@ExcludeRootRegistration` | classe | não cria alias para a cadeia de superclasses | aliases de interfaces continuam sendo registrados |
 | `@DisableInjectionWarn` | classe/campo/parâmetro/método conforme uso | suprime logs de falha de injeção | não transforma dependência em obrigatória nem fornece fallback |
+
+### `@Async` e tipo genérico
+
+Um produtor `@Async` ou uma classe `@Async` que produza um tipo genérico é selecionado pelo
+argumento de tipo: dois produtores `@Async` devolvendo `Processor<Foo>` e `Processor<Bar>` coexistem
+e são injetados por `AsyncComponent<Processor<Foo>>` e `AsyncComponent<Processor<Bar>>`, sem
+qualifier. Fora da injeção, use `TypeRef`.
+
+### Qualifier, `@Primary` e tipo genérico
+
+Quando as implementações diferem apenas pelo argumento de tipo, **não é preciso qualifier**:
+o container resolve `Processor<Foo>` para a implementação que declara `Processor<Foo>`.
+
+A precedência é: `@Qualifier` explícito, depois match genérico exato, depois `@Primary`,
+depois o registro `default`. Ou seja, `@Qualifier` continua vencendo tudo, mas um tipo
+genérico mais específico ganha de `@Primary`, por ser mais preciso. Detalhes e regras de
+wildcard em `FRAMEWORK_BEHAVIOR.md`.
 
 ### Qualifiers previsíveis
 
@@ -31,8 +48,8 @@ Em classe, use `@Qualifier`:
 public class PostalNotifier implements Notifier {}
 ```
 
-Os atributos `@Component(qualifier = "...")` e `@Service(qualifier = "...")` existem, mas
-o caminho de registro de **classe** não os lê. Eles são lidos em método produtor:
+Os atributos `@Component(qualifier = "...")` e `@Service(qualifier = "...")` são lidos tanto em
+classe quanto em método produtor, sempre abaixo de um `@Qualifier` explícito:
 
 ```java
 @Configuration
@@ -44,10 +61,11 @@ public class NotifierConfig {
 }
 ```
 
-Não use `@Qualifier` diretamente junto de `@Component`/`@Service` no produtor: o atributo
-da anotação componente é consultado primeiro, inclusive quando vale `default`.
+Em produtor, a precedência é `@Qualifier` > atributo `qualifier` da anotação produtora >
+`@Primary` > `"default"` — a mesma ordem do caminho de classe. Um `qualifier` explicitamente
+igual a `"default"` conta como não especificado, então `@Primary` ainda é consultado.
 
-Em campo, ambas as formas funcionam; `@Qualifier` tem precedência:
+Em campo e em parâmetro, ambas as formas funcionam; `@Qualifier` tem precedência:
 
 ```java
 @Inject(qualifier = "postal")

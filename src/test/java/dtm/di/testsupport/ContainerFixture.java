@@ -1,6 +1,8 @@
 package dtm.di.testsupport;
 
+import dtm.di.core.AmbiguityPolicy;
 import dtm.di.core.InjectionStrategy;
+import dtm.di.core.PrototypeListenerPolicy;
 import dtm.di.exceptions.InvalidClassRegistrationException;
 import dtm.di.prototypes.Dependency;
 import dtm.di.storage.StaticContainer;
@@ -46,6 +48,32 @@ public final class ContainerFixture {
     @SuppressWarnings("unchecked")
     public static Map<Class<?>, Dependency> primaryIndexOf(DependencyContainerStorage container) {
         return (Map<Class<?>, Dependency>) readField(container, "primaryDependencyIndex");
+    }
+
+    @SuppressWarnings("unchecked")
+    public static Map<String, Map<String, Dependency>> genericIndexOf(DependencyContainerStorage container) {
+        return (Map<String, Map<String, Dependency>>) readField(container, "genericDependencyIndex");
+    }
+
+    @SuppressWarnings("unchecked")
+    public static AmbiguityPolicy ambiguityPolicyOf(DependencyContainerStorage container) {
+        AtomicReference<AmbiguityPolicy> policy =
+                (AtomicReference<AmbiguityPolicy>) readField(container, "ambiguityPolicy");
+        return policy.get();
+    }
+
+    @SuppressWarnings("unchecked")
+    public static PrototypeListenerPolicy prototypeListenerPolicyOf(DependencyContainerStorage container) {
+        AtomicReference<PrototypeListenerPolicy> policy =
+                (AtomicReference<PrototypeListenerPolicy>) readField(container, "prototypeListenerPolicy");
+        return policy.get();
+    }
+
+    @SuppressWarnings("unchecked")
+    public static boolean genericResolutionEnabledOf(DependencyContainerStorage container) {
+        java.util.concurrent.atomic.AtomicBoolean enabled =
+                (java.util.concurrent.atomic.AtomicBoolean) readField(container, "genericResolutionEnabled");
+        return enabled.get();
     }
 
     @SuppressWarnings("unchecked")

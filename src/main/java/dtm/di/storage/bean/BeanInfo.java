@@ -4,6 +4,7 @@ import lombok.Builder;
 import lombok.Data;
 
 import java.lang.reflect.Method;
+import java.lang.reflect.Type;
 import java.util.Set;
 
 @Data
@@ -14,6 +15,8 @@ public class BeanInfo {
     private Class<?> configClass;
     private Method method;
     private Set<Class<?>> dependencyTypes;
+    private Set<Type> dependencyGenericTypes;
+    private Type producedGenericType;
     private Set<String> dependencies;
     private boolean singleton;
     private boolean aop;

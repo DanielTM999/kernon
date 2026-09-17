@@ -23,6 +23,7 @@ public final class ExternalComponentRegistration {
     private final long sequence;
 
     private final List<DependencyRegistrationSlot> dependencySlots = Collections.synchronizedList(new ArrayList<>());
+    private final List<GenericRegistrationSlot> genericSlots = Collections.synchronizedList(new ArrayList<>());
     private final Set<Class<?>> dependencies = Collections.synchronizedSet(new LinkedHashSet<>());
     private final List<Object> singletonInstances = Collections.synchronizedList(new ArrayList<>());
     private final List<EventListenerRegistration> eventListeners = Collections.synchronizedList(new ArrayList<>());
@@ -60,6 +61,12 @@ public final class ExternalComponentRegistration {
     public void addSlot(DependencyRegistrationSlot slot) {
         if (slot != null) {
             dependencySlots.add(slot);
+        }
+    }
+
+    public void addGenericSlot(GenericRegistrationSlot slot) {
+        if (slot != null) {
+            genericSlots.add(slot);
         }
     }
 
@@ -127,6 +134,12 @@ public final class ExternalComponentRegistration {
         }
     }
 
+    public List<GenericRegistrationSlot> snapshotGenericSlots() {
+        synchronized (genericSlots) {
+            return new ArrayList<>(genericSlots);
+        }
+    }
+
     public List<Object> snapshotInstances() {
         synchronized (singletonInstances) {
             return new ArrayList<>(singletonInstances);
@@ -178,6 +191,7 @@ public final class ExternalComponentRegistration {
 
     public void clear() {
         dependencySlots.clear();
+        genericSlots.clear();
         dependencies.clear();
         singletonInstances.clear();
         eventListeners.clear();

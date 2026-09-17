@@ -5,6 +5,7 @@ import dtm.di.annotations.Component;
 import dtm.di.annotations.Inject;
 import dtm.di.annotations.aop.DisableAop;
 import dtm.di.common.AnnotationsUtils;
+import dtm.di.common.reflection.GenericTypes;
 import dtm.di.common.reflection.ReflectionCache;
 import dtm.di.prototypes.RegistrationFunction;
 import dtm.di.prototypes.async.AsyncComponent;
@@ -21,6 +22,7 @@ public class BeanDependencyGraphBuilder {
     private final Set<Class<?>> serviceClasses;
     private final Map<String, BeanInfo> allBeans;
     private final Map<Class<?>, String> typeToBeanId;
+    private final Map<String, String> genericTypeToBeanId;
     private final Predicate<Method> beanMethodFilter;
     private final Map<Class<?>, Boolean> userServiceCache = new HashMap<>();
 
@@ -32,6 +34,7 @@ public class BeanDependencyGraphBuilder {
         this.serviceClasses = serviceClasses;
         this.allBeans = new LinkedHashMap<>();
         this.typeToBeanId = new HashMap<>();
+        this.genericTypeToBeanId = new HashMap<>();
         this.beanMethodFilter = Objects.requireNonNull(beanMethodFilter, "beanMethodFilter não pode ser null");
     }
 
@@ -53,6 +56,8 @@ public class BeanDependencyGraphBuilder {
                     .configClass(configClass)
                     .method(null)
                     .dependencyTypes(configDeps)
+                    .dependencyGenericTypes(new LinkedHashSet<>(configDeps))
+                    .producedGenericType(configClass)
                     .dependencies(new HashSet<>())
                     .singleton(true)
                     .aop(false)
@@ -90,13 +95,18 @@ public class BeanDependencyGraphBuilder {
             }
 
             String beanId = configClass.getName() + "." + method.getName();
-            Class<?> returnType = extractProcucedType(method);
+            Type producedGenericType = extractProducedGenericType(method);
+            Class<?> returnType = rawOrDefault(producedGenericType, method.getReturnType());
 
             Set<Class<?>> methodDeps = new HashSet<>();
+            Set<Type> methodGenericDeps = new LinkedHashSet<>();
             methodDeps.add(configClass);
+            methodGenericDeps.add(configClass);
 
             for (Parameter param : method.getParameters()) {
-                methodDeps.add(extractDependencyType(param));
+                Type dependencyGenericType = extractDependencyGenericType(param);
+                methodDeps.add(rawOrDefault(dependencyGenericType, param.getType()));
+                methodGenericDeps.add(dependencyGenericType);
             }
 
             BeanInfo beanDef = BeanInfo.builder()
@@ -105,6 +115,8 @@ public class BeanDependencyGraphBuilder {
                     .configClass(configClass)
                     .method(method)
                     .dependencyTypes(methodDeps)
+                    .dependencyGenericTypes(methodGenericDeps)
+                    .producedGenericType(producedGenericType)
                     .dependencies(new HashSet<>())
                     .singleton(isSingletonBean(method))
                     .aop(isAopEnabled(method))
@@ -112,49 +124,46 @@ public class BeanDependencyGraphBuilder {
 
             allBeans.put(beanId, beanDef);
             typeToBeanId.putIfAbsent(returnType, beanId);
+            indexGenericProducer(producedGenericType, beanId);
         }
     }
 
-    private Class<?> extractProcucedType(Method method){
-        Class<?> returnType = method.getReturnType();
-
-        if(RegistrationFunction.class.isAssignableFrom(returnType)){
-            Type genericReturnType = method.getGenericReturnType();
-
-            if (genericReturnType instanceof ParameterizedType parameterizedType) {
-                Type[] typeArguments = parameterizedType.getActualTypeArguments();
-
-                if (typeArguments.length > 0) {
-                    Type actualType = typeArguments[0];
-                    if (actualType instanceof Class<?> actualClass) {
-                        returnType = actualClass;
-                    } else if (actualType instanceof ParameterizedType pt) {
-                        returnType = (Class<?>) pt.getRawType();
-                    }
-                }
-            }
+    private Type extractProducedGenericType(Method method){
+        if(!RegistrationFunction.class.isAssignableFrom(method.getReturnType())){
+            return method.getGenericReturnType();
         }
 
-        return returnType;
+        return firstTypeArgumentOrDefault(method.getGenericReturnType(), method.getReturnType());
     }
 
-    private Class<?> extractDependencyType(Parameter parameter){
+    private Type extractDependencyGenericType(Parameter parameter){
         if(!AsyncComponent.class.equals(parameter.getType())){
-            return parameter.getType();
+            return parameter.getParameterizedType();
         }
 
-        Type parameterType = parameter.getParameterizedType();
-        if(parameterType instanceof ParameterizedType parameterizedType){
-            Type targetType = parameterizedType.getActualTypeArguments()[0];
-            if(targetType instanceof Class<?> targetClass){
-                return targetClass;
-            }
-            if(targetType instanceof ParameterizedType nestedType){
-                return (Class<?>) nestedType.getRawType();
-            }
-        }
+        return firstTypeArgumentOrDefault(parameter.getParameterizedType(), parameter.getType());
+    }
 
-        return parameter.getType();
+    private Type firstTypeArgumentOrDefault(Type type, Type fallback){
+        if(type instanceof ParameterizedType parameterizedType){
+            Type[] typeArguments = parameterizedType.getActualTypeArguments();
+            if(typeArguments.length > 0) return typeArguments[0];
+        }
+        return fallback;
+    }
+
+    private Class<?> rawOrDefault(Type type, Class<?> fallback){
+        Class<?> raw = GenericTypes.raw(type);
+        return (raw != null) ? raw : fallback;
+    }
+
+    private void indexGenericProducer(Type producedGenericType, String beanId){
+        if(!(producedGenericType instanceof ParameterizedType)) return;
+
+        String genericKey = GenericTypes.key(producedGenericType);
+        if(GenericTypes.isFullyResolved(genericKey)){
+            genericTypeToBeanId.putIfAbsent(genericKey, beanId);
+        }
     }
 
     private void resolveDependencies() {
@@ -162,12 +171,21 @@ public class BeanDependencyGraphBuilder {
             Set<String> resolvedDeps = new HashSet<>();
             boolean hasServiceDependency = false;
 
-            for (Class<?> depType : bean.getDependencyTypes()) {
+            Set<Type> genericDependencies = (bean.getDependencyGenericTypes() != null)
+                    ? bean.getDependencyGenericTypes()
+                    : Set.of();
+
+            for (Type dependencyType : genericDependencies) {
+                if (dependencyType == null) {
+                    continue;
+                }
+
+                Class<?> depType = GenericTypes.raw(dependencyType);
                 if (depType == null) {
                     continue;
                 }
 
-                String producerBeanId = findBeanProducer(depType);
+                String producerBeanId = findBeanProducer(dependencyType, depType);
 
                 if (producerBeanId != null) {
                     resolvedDeps.add(producerBeanId);
@@ -179,6 +197,20 @@ public class BeanDependencyGraphBuilder {
             bean.setDependencies(resolvedDeps);
             bean.setDependsOnUserServices(hasServiceDependency);
         }
+    }
+
+    private String findBeanProducer(Type requested, Class<?> type) {
+        if (requested instanceof ParameterizedType) {
+            String genericKey = GenericTypes.key(requested);
+            if (GenericTypes.isFullyResolved(genericKey)) {
+                String genericMatch = genericTypeToBeanId.get(genericKey);
+                if (genericMatch != null) {
+                    return genericMatch;
+                }
+            }
+        }
+
+        return findBeanProducer(type);
     }
 
     private String findBeanProducer(Class<?> type) {

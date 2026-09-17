@@ -1,6 +1,8 @@
 package dtm.di.prototypes;
 
+import java.lang.reflect.Type;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Representa uma dependência registrada no container de injeção.
@@ -27,4 +29,12 @@ public abstract class Dependency {
     public abstract Class<?> getDependencyClass();
     public abstract String getQualifier();
     public abstract List<Class<?>> getDependencyClassInstanceTypes();
+
+    public Set<Type> getGenericSupertypes() {
+        return Set.of();
+    }
+
+    public Set<String> getGenericTypeKeys() {
+        return Set.of();
+    }
 }

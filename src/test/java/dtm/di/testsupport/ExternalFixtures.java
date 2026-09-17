@@ -12,6 +12,10 @@ public final class ExternalFixtures {
     public static final String FIELD_CONSUMER = "ext.FieldConsumer";
     public static final String MAIN_AWARE = "ext.MainAware";
     public static final String INTERFACE_CONSUMER = "ext.InterfaceConsumer";
+    public static final String GENERIC_HANDLER = "ext.GenericHandler";
+    public static final String ASYNC_GENERIC_CONFIGURATION = "ext.AsyncGenericConfiguration";
+    public static final String STRING_HANDLER = "ext.StringHandler";
+    public static final String NUMBER_HANDLER = "ext.NumberHandler";
     public static final String SPEAKER = "ext.Speaker";
     public static final String ALPHA_SPEAKER = "ext.AlphaSpeaker";
     public static final String BETA_SPEAKER = "ext.BetaSpeaker";
@@ -192,6 +196,70 @@ public final class ExternalFixtures {
 
                     public String describe() {
                         return "interface:" + greeter.greet();
+                    }
+                }
+                """);
+
+        sources.put(GENERIC_HANDLER, """
+                package ext;
+
+                public interface GenericHandler<T> {
+                    String handle();
+                }
+                """);
+
+        sources.put(ASYNC_GENERIC_CONFIGURATION, """
+                package ext;
+
+                import dtm.di.annotations.Async;
+                import dtm.di.annotations.Component;
+                import dtm.di.annotations.Configuration;
+
+                @Configuration
+                public class AsyncGenericConfiguration {
+
+                    @Async
+                    @Component
+                    public GenericHandler<String> asyncStringHandler() {
+                        return () -> "async-string-handler";
+                    }
+
+                    @Async
+                    @Component
+                    public GenericHandler<Integer> asyncNumberHandler() {
+                        return () -> "async-number-handler";
+                    }
+                }
+                """);
+
+        sources.put(STRING_HANDLER, """
+                package ext;
+
+                import dtm.di.annotations.Component;
+                import dtm.di.annotations.Singleton;
+
+                @Singleton
+                @Component
+                public class StringHandler implements GenericHandler<String> {
+                    @Override
+                    public String handle() {
+                        return "string-handler";
+                    }
+                }
+                """);
+
+        sources.put(NUMBER_HANDLER, """
+                package ext;
+
+                import dtm.di.annotations.Component;
+                import dtm.di.annotations.Singleton;
+
+                @Singleton
+                @Component
+                public class NumberHandler implements GenericHandler<Integer> {
+                    @Override
+                    public String handle() {
+                        return "number-handler";
                     }
                 }
                 """);

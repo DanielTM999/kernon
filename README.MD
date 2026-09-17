@@ -145,6 +145,10 @@ interface; use qualifiers distintos.
 | profile | `default` | argumentos/perfis, CLI ou `settings.json` |
 | injeção de campos | `ADAPTIVE` | API ou `dependencyContainer.injectionStrategy` |
 | `ADAPTIVE` | sequencial até 10 campos; paralela acima de 10 | `PARALLEL` ou `SEQUENTIAL` |
+| resolução por tipo genérico | habilitada | API ou `dependencyContainer.genericResolution` |
+| ambiguidade de candidatos | `FAIL_FAST` | API ou `dependencyContainer.ambiguityPolicy` (`LOG`, `SILENT`) |
+| lookup programático genérico | por classe crua | `TypeRef<T>` nas sobrecargas de `getDependencyAsync` |
+| listener `@Event` prototype | `SKIP` | API ou `dependencyContainer.prototypeListenerPolicy` (`SKIP_SILENT`, `REGISTER`) |
 | `@EventListener` | síncrono, `order = 0` | `async` e `order` |
 | scheduler | desabilitado | `@EnableSchedule` no bootable |
 | threads do scheduler | 2; valores menores também viram 2 | `@EnableSchedule(threads = ...)` |

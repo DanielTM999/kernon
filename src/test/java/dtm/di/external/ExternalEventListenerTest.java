@@ -171,16 +171,16 @@ class ExternalEventListenerTest {
     }
 
     @Test
-    @DisplayName("no container principal um prototype listener recebe o evento em uma instância fantasma")
-    void mainContainerPrototypeListenerReceivesOnAGhostInstance() {
+    @DisplayName("no container principal um prototype listener nao e registrado no scan inicial")
+    void mainContainerPrototypeListenerIsNotRegistered() {
         MainPrototypeListener obtido = container.getDependency(MainPrototypeListener.class);
 
         container.getDependency(EventPublisher.class).publish(new MainPingEvent("p"));
 
         assertEquals(0, Probe.count("MainPrototypeListener:p:" + System.identityHashCode(obtido)));
         assertTrue(
-                Probe.events().stream().anyMatch(event -> event.startsWith("MainPrototypeListener:p:")),
-                "o boot registra o listener em uma instância descartável"
+                Probe.events().stream().noneMatch(event -> event.startsWith("MainPrototypeListener:p:")),
+                "nenhuma instância descartável deve receber o evento"
         );
     }
 
