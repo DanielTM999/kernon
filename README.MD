@@ -150,6 +150,8 @@ interface; use qualifiers distintos.
 | lookup programático genérico | por classe crua | `TypeRef<T>` nas sobrecargas de `getDependencyAsync` |
 | listener `@Event` prototype | `SKIP` | API ou `dependencyContainer.prototypeListenerPolicy` (`SKIP_SILENT`, `REGISTER`) |
 | `@EventListener` | síncrono, `order = 0` | `async` e `order` |
+| main thread worker | desabilitado; `doRun` retorna logo | `@EnableMainThreadWorker` no bootable |
+| acesso estático ao worker | desabilitado | `@EnableMainThreadWorker(staticCaller = true)` |
 | scheduler | desabilitado | `@EnableSchedule` no bootable |
 | threads do scheduler | 2; valores menores também viram 2 | `@EnableSchedule(threads = ...)` |
 | `@ScheduleMethod.timeUnit` | milissegundos | atributo da anotação |
@@ -183,6 +185,10 @@ interface; use qualifiers distintos.
 - Falha de injeção em campo é logada e o campo pode permanecer `null`; ela não garante
   falha do boot.
 - O shutdown hook chama `ON_CLOSE`, encerra o scheduler e descarrega o container.
+  `ManagedApplication.shutdown()` executa a mesma sequência sob demanda, uma única vez.
+- Com `@EnableMainThreadWorker`, `doRun` bloqueia e a thread real de `main` executa as tasks
+  de `MainThreadWorker` (útil para GLFW, LWJGL, OpenGL e SWT). Veja
+  [Main thread worker](docs/FRAMEWORK_BEHAVIOR.md#main-thread-worker).
   `@PreDestroy` executa uma vez para cada singleton gerenciado; prototypes não possuem
   descarte automático porque o container não retém suas instâncias. Beans proxied também
   são deduplicados por objeto e assinatura de método.

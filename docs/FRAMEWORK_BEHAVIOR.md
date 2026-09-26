@@ -43,6 +43,7 @@ O bootstrap inspeciona diretamente o bootable para localizar:
 - `@OnBoot` e `@OnApplicationFail` em métodos declarados;
 - `@LifecycleHook` em métodos declarados;
 - `@EnableSchedule`;
+- `@EnableMainThreadWorker`;
 - `@DisableAop`;
 - `@DependencyContainerFactory`;
 - `@PackageScanIgnore`.
@@ -93,7 +94,9 @@ um handler desse tipo.
 
 Consequências práticas:
 
-- `doRun(...)` retorna assim que inicia a `BootThread`; não é uma barreira de readiness.
+- Sem `@EnableMainThreadWorker`, `doRun(...)` retorna assim que inicia a `BootThread`; não
+  é uma barreira de readiness. Com a anotação, `doRun(...)` bloqueia a thread chamadora no
+  [main thread worker](#main-thread-worker) até ele terminar.
 - Somente `BEFORE_ALL` termina antes de `doRun(...)` retornar.
 - O registro das tarefas agendadas pode ocorrer antes, durante ou depois do corpo de
   `@OnBoot`, porque o boot apenas dispara esse trabalho.
@@ -110,7 +113,8 @@ Todos os hooks devem ser `static`, retornar `void` e ser `public` ou `protected`
   `@OnBoot`.
 - Menor `order` executa primeiro dentro do mesmo evento.
 - Empates de `order` não têm ordem garantida.
-- `ON_CLOSE` executa no shutdown hook, antes do scheduler e do container serem encerrados.
+- `ON_CLOSE` executa no encerramento (shutdown hook da JVM ou `ManagedApplication.shutdown()`),
+  uma única vez, antes do scheduler e do container serem encerrados.
 - Uma exceção do hook vira `InvalidBootException`.
 
 `AFTER_ALL` é chamado em `finally` mesmo quando o carregamento, `@OnBoot`, runner ou hook
@@ -612,6 +616,148 @@ Workers têm nome `App-Scheduler-Worker` e são daemon. Exceção da tarefa é c
 logada; no modo periódico, a captura permite novas execuções. O shutdown apenas chama
 `shutdown()`, sem `awaitTermination` confirmado.
 
+## Main thread worker
+
+Bibliotecas com afinidade de thread (GLFW, LWJGL, OpenGL, SWT e outras APIs nativas) exigem
+que certas chamadas aconteçam na thread que executou `main`. Com `@EnableMainThreadWorker`
+no bootable, essa thread real da JVM — a que chamou `ManagedApplication.doRun(...)` — vira
+um dispatcher de tasks depois de disparar o boot. Nenhuma thread nova chamada "main" é
+criada.
+
+```text
+JVM main thread                          BootThread
+     |                                        |
+doRun(...) -- BEFORE_ALL --> dispara ------>  load() / @OnBoot / runners
+     |                                        |  worker.runOnMainThread(...)
+MainThreadWorker.runLoop() <------------------+
+     |  espera (sem busy-wait), executa, espera...
+     v
+shutdown / stop  ->  runLoop termina  ->  doRun retorna  ->  main retorna
+```
+
+```java
+@ApplicationBoot(GameBoot.class)
+public class Main {
+    public static void main(String[] args) {
+        ManagedApplication.doRun(args);
+    }
+}
+
+@EnableMainThreadWorker
+public class GameBoot {
+    @OnBoot
+    public static void boot(Game game, MainThreadWorker worker) {
+        worker.runOnMainThread(game::run);
+    }
+}
+
+public void run() {
+    init();
+    while (!shouldClose()) {
+        update();
+        render();
+    }
+    dispose();
+    ManagedApplication.shutdown();
+}
+```
+
+### Disponibilidade
+
+- O worker é criado em `doRun`, ligado à instância real de `Thread` chamadora, e registrado
+  no container **antes** de `load()`, sem proxy AOP. Singletons que recebem
+  `MainThreadWorker` no construtor, `@OnBoot`, hooks e runners o resolvem normalmente.
+- Tasks enviadas antes de a main thread entrar no loop ficam na fila (estado `NEW`); não há
+  janela em que o worker exista mas recuse trabalho durante o bootstrap.
+- `isMainThread()` compara a instância de `Thread`, nunca o nome `"main"`.
+- Sem a anotação nada disso existe: `doRun` mantém o comportamento anterior, o container não
+  tem `MainThreadWorker` e `ManagedApplication.getMainThreadWorker()` lança
+  `MainThreadWorkerAccessException` (`NOT_ENABLED`).
+
+### Acesso estático
+
+`@EnableMainThreadWorker(staticCaller = true)` libera
+`ManagedApplication.getMainThreadWorker()`, que devolve a mesma instância registrada no
+DI, já a partir de `BEFORE_ALL`. Com o default `staticCaller = false`, o método lança
+`MainThreadWorkerAccessException` (`STATIC_ACCESS_DISABLED`) e o acesso fica restrito à
+injeção.
+
+### Envio de tasks
+
+| Método | Chamado pela main thread | Chamado por outra thread |
+|---|---|---|
+| `runOnMainThread(Runnable)` | executa imediatamente; exceção propaga ao chamador | enfileira e retorna; exceção vai ao handler global do Kernon e o worker continua |
+| `runAndAwaitOnMainThread(Runnable)` | executa imediatamente | enfileira e bloqueia até terminar; relança a `RuntimeException`/`Error` original |
+| `callOnMainThread(Callable<T>)` | executa imediatamente e devolve future já concluído | enfileira; o future conclui com o valor ou com `completeExceptionally` |
+
+A execução imediata quando o chamador já está na main thread é deliberada: enfileirar e
+esperar faria a main thread aguardar a si mesma (deadlock), e enfileirar sem esperar
+adiaria sem motivo um trabalho que já pode rodar na thread correta.
+
+"Handler global" é a mesma cadeia usada pelo boot: `@ControllerAdvice`, `@ExceptionHandler`,
+`@OnApplicationFail` e, por fim, o `UncaughtExceptionHandler` anterior.
+
+### Estados e encerramento
+
+`NEW → RUNNING → SHUTTING_DOWN | STOPPING → TERMINATED`. Todas as transições e o par
+"verificar estado + enfileirar" acontecem sob o mesmo lock da instância; não é possível uma
+task entrar na fila depois de `shutdown()`/`stop()`.
+
+- `shutdown()`: recusa novas tasks e executa tudo que já está na fila (A, B, C, D →
+  `TERMINATED`).
+- `stop()`: recusa novas tasks e descarta a fila; a task em execução termina normalmente
+  (A → `TERMINATED`). Não há `Thread.stop()` nem `interrupt()` — uma task pode estar dentro
+  de código nativo. Futures de tasks descartadas concluem com `CancellationException`, e
+  quem estava em `runAndAwaitOnMainThread` é liberado com essa exceção.
+- Após `shutdown()` ou `stop()`, os três métodos de envio lançam
+  `RejectedExecutionException`, inclusive quando chamados pela main thread.
+- Ambos são idempotentes; `stop()` depois de `shutdown()` descarta o que restou.
+- `awaitTermination(timeout, unit)` espera `TERMINATED`; chamado pela própria main thread
+  com o worker ativo, lança `IllegalStateException` em vez de travar.
+- Interromper a main thread enquanto ela aguarda tasks equivale a `stop()`; a flag de
+  interrupção é restaurada quando `doRun` retorna.
+
+### `MainThreadWorker.shutdown()` vs `ManagedApplication.shutdown()`
+
+- `mainThreadWorker.shutdown()` encerra apenas o dispatcher. `doRun`/`main` retornam, mas o
+  runtime Kernon (container, scheduler, beans) continua vivo até a JVM encerrar, quando o
+  shutdown hook executa o fechamento.
+- `ManagedApplication.shutdown()` encerra o runtime. Com worker ativo, ele faz
+  `shutdown()` do worker e retorna; quando a fila esvazia, a própria main thread executa
+  `ON_CLOSE`, encerra o scheduler e descarrega o container, e então `doRun` retorna. Assim
+  nenhuma task enfileirada roda com o container já descarregado, e chamar
+  `ManagedApplication.shutdown()` de dentro de uma task não causa deadlock. Sem worker, o
+  fechamento roda imediatamente na thread chamadora.
+- O worker não conhece `ManagedApplication`; a dependência é apenas de
+  `ManagedApplication` para o worker.
+
+### Falhas
+
+- Falha em `load()`, `@OnBoot`, runner ou hook pós-load, ou erro registrado com
+  `ManagedApplication.reportError`, é reportada ao handler como antes e em seguida faz
+  `stop()` do worker: a main thread sai do loop e `doRun` retorna.
+- Falha síncrona antes da `BootThread` (bootable inválido, `BEFORE_ALL`) faz `stop()` do
+  worker e propaga a exceção de `doRun`, como antes.
+- `System.exit` dentro de uma task: o shutdown hook faz `stop()` do worker sem esperar a
+  main thread (ela está presa em `System.exit`) e executa o fechamento uma vez.
+
+### `@RunOnMainThread`
+
+Açúcar sintático via AOP (`RunOnMainThreadAspect`, importado por
+`@EnableMainThreadWorker`). A infraestrutura não depende dele: com `@DisableAop` o worker
+continua funcionando e apenas a anotação deixa de ter efeito (o método roda na thread
+chamadora).
+
+| Retorno do método | Chamada fora da main thread | Chamada na main thread |
+|---|---|---|
+| `void` | `runOnMainThread`, não espera | executa imediatamente |
+| `CompletableFuture`/`CompletionStage` | `callOnMainThread`, future achatado | executa imediatamente, future já concluído |
+| `Future` | `callOnMainThread`, resultado desembrulhado | executa imediatamente |
+| outro tipo | enfileira e espera o valor | executa imediatamente |
+
+Nunca há espera síncrona a partir da main thread. Métodos de classes `@Configuration` não
+são interceptados, como em `@Async`.
+
 ## Erros e propagação
 
 | Situação | Comportamento confirmado |
@@ -649,11 +795,19 @@ antes de `doRun`; se não havia um, imprime stack trace.
 
 ## Shutdown e descarga externa
 
-O boot gerenciado instala uma única shutdown hook estática por JVM:
+O boot gerenciado instala uma única shutdown hook estática por JVM. O hook e
+`ManagedApplication.shutdown()` compartilham a mesma sequência de fechamento, executada
+exatamente uma vez por JVM:
 
 1. executa hooks `ON_CLOSE`;
 2. chama `shutdown()` no scheduler;
-3. chama `container.unload()`.
+3. chama `container.unload()`;
+4. faz `stop()` do main thread worker, se existir.
+
+Chamadas repetidas de `ManagedApplication.shutdown()` são no-op. Quem chega enquanto outra
+thread ainda fecha a aplicação espera até 30 s pela conclusão, o que evita que a JVM
+termine no meio do fechamento. Sem worker, `ManagedApplication.shutdown()` não encerra a
+JVM: threads não daemon da aplicação continuam vivas até terminarem.
 
 No caminho global, `unload()` reúne as instâncias externas possuídas e todos os singletons
 do container principal, elimina duplicatas por identidade e executa `@PreDestroy` uma vez
@@ -697,6 +851,8 @@ As regras acima foram confrontadas com a implementação e com os seguintes test
 | carga/descarga externa | testes do pacote `dtm.di.external` |
 | estratégia de injeção | `InjectionStrategySettingsTest` |
 | settings e registro externo | `JsonAppSettingsRegistryTest` |
+| main thread worker: fila, estados, concorrência | `DefaultMainThreadWorkerTest` |
+| main thread worker no boot, DI, falhas, shutdown global e `@RunOnMainThread` | `MainThreadWorkerIntegrationTest` em JVM filha |
 
 O cenário gerenciado usa um processo Java separado. Isso valida a instalação e execução do
 shutdown hook real e evita que o estado estático do bootstrap contamine outros testes.

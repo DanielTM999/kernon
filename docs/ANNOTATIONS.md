@@ -163,6 +163,7 @@ basta a correspondência de um dos valores.
 | `@LifecycleHook` | método do bootable | evento `AFTER_CONTAINER_LOAD`, `order = 0` | `static`, `void`, público/protegido; menor order primeiro |
 | `@DependencyContainerFactory` | bootable | `DependencyContainerStorage.class` | tenta obter um container de uma factory estática |
 | `@DisableAop` | tipo ou método | desabilita proxy conforme o caminho | no bootable desabilita AOP global do boot gerenciado |
+| `@EnableMainThreadWorker` | bootable | desabilitado; `staticCaller = false` | a thread que chamou `doRun` vira o `MainThreadWorker` e `doRun` bloqueia; `staticCaller = true` libera `ManagedApplication.getMainThreadWorker()` |
 
 Eventos de `@LifecycleHook`:
 
@@ -172,7 +173,7 @@ Eventos de `@LifecycleHook`:
 | `AFTER_CONTAINER_LOAD` | depois de `load()` | container, args ou beans |
 | `AFTER_STARTUP_METHOD` | depois de `@OnBoot` e runners | container, args ou beans |
 | `AFTER_ALL` | final da tentativa de boot | container, args ou beans |
-| `ON_CLOSE` | início do shutdown hook | container, args ou beans |
+| `ON_CLOSE` | início do encerramento (shutdown hook ou `ManagedApplication.shutdown()`), uma vez | container, args ou beans |
 
 Menor `order` executa primeiro. Empates não têm ordem garantida.
 
@@ -245,6 +246,21 @@ O método deve retornar diretamente o tipo `T`. Não combine `@Async` com retorn
 `@BeanDefinition(proxyType = INSTANCE)` ou `@Primary`. Qualifiers são suportados. Para
 escolher executor, qualifier e supplier explicitamente, retorne
 `AsyncRegistrationFunction<T>` de um produtor síncrono.
+
+## Main thread
+
+| Uso | Depende de | Efeito |
+|---|---|---|
+| `@EnableMainThreadWorker` | bootable | cria o `MainThreadWorker` na thread real de `main`, registra no DI antes de `load()` e importa `RunOnMainThreadAspect` |
+| `@EnableMainThreadWorker(staticCaller = true)` | bootable | `ManagedApplication.getMainThreadWorker()` devolve a instância do DI; sem ele, lança `MainThreadWorkerAccessException` |
+| `@RunOnMainThread` | método de bean gerenciado, `@EnableMainThreadWorker`, AOP ativo e chamada pelo proxy | despacha a execução para o `MainThreadWorker` |
+
+Retornos de `@RunOnMainThread`: `void` não espera; `CompletableFuture`/`CompletionStage` e
+`Future` devolvem um future concluído na main thread; outro tipo espera o valor. Chamado
+pela própria main thread, o método sempre executa imediatamente, sem enfileirar. Com
+`@DisableAop` a anotação não tem efeito, mas o `MainThreadWorker` continua disponível por
+injeção. Detalhes em
+[Comportamento do framework](FRAMEWORK_BEHAVIOR.md#main-thread-worker).
 
 ## Eventos
 

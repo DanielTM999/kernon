@@ -8,7 +8,15 @@ Cada item foi confirmado por leitura do código ou por teste. Última revalidaç
 ### Boot e ciclo de vida
 
 - `ManagedApplication.doRun(...)` retorna antes do fim do boot. Não há API de readiness ou
-  future público do boot.
+  future público do boot. Com `@EnableMainThreadWorker` ele bloqueia até o worker terminar,
+  mas isso também não sinaliza readiness.
+- Com `@EnableMainThreadWorker`, a aplicação permanece viva enquanto o worker estiver ativo:
+  sem `ManagedApplication.shutdown()`, `MainThreadWorker.shutdown()`/`stop()`, falha de boot
+  ou `System.exit`, `main` não retorna.
+- O `MainThreadWorker` usa a thread que chamou `doRun`; ele não altera como a JVM cria essa
+  thread. No macOS, GLFW continua exigindo `-XstartOnFirstThread`.
+- `@RunOnMainThread` só intercepta chamadas feitas pelo proxy AOP; chamadas internas
+  (`this.metodo()`) e beans com `@DisableAop` executam na thread chamadora.
 - O registro de schedules é disparado em background antes de `@OnBoot` e não é aguardado.
 - A carga inicial marca o container como carregado antes de concluir todo o registro. A flag
   antecipada é estrutural — os passos seguintes de `load()` dependem dela —, mas não há rollback

@@ -9,13 +9,17 @@ O ponto de entrada recomendado é `dtm.di.application.startup.ManagedApplication
 Resumo das regras que costumavam ficar ambíguas neste documento:
 
 - `@ApplicationBoot` exige `value`; a classe informada é o bootable.
-- `@OnBoot`, `@OnApplicationFail`, `@LifecycleHook`, `@EnableSchedule` e
-  `@DisableAop` devem ser colocados no bootable quando dependem da inspeção direta do boot.
-- `doRun(...)` retorna antes do fim do boot.
+- `@OnBoot`, `@OnApplicationFail`, `@LifecycleHook`, `@EnableSchedule`,
+  `@EnableMainThreadWorker` e `@DisableAop` devem ser colocados no bootable quando dependem
+  da inspeção direta do boot.
+- `doRun(...)` retorna antes do fim do boot. Com `@EnableMainThreadWorker`, `doRun(...)`
+  bloqueia a thread chamadora, que passa a executar as tasks do `MainThreadWorker` até
+  `ManagedApplication.shutdown()`, `MainThreadWorker.shutdown()`/`stop()` ou falha do boot.
 - `BEFORE_ALL` roda na thread chamadora; as fases seguintes rodam na `BootThread`.
 - o disparo do registro do scheduler ocorre em background antes de `@OnBoot` e não é
   aguardado.
 - `AFTER_ALL` é tentado no `finally`, inclusive após erro.
-- `ON_CLOSE` pertence ao shutdown, não ao boot.
+- `ON_CLOSE` pertence ao shutdown, não ao boot; roda uma vez, seja pelo shutdown hook da JVM
+  ou por `ManagedApplication.shutdown()`.
 
 Para exemplos completos, consulte o [README](../README.MD#exemplo-mínimo).

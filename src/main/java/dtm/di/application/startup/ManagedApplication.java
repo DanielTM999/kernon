@@ -9,6 +9,7 @@ import dtm.di.annotations.schedule.EnableSchedule;
 import dtm.di.annotations.aop.DisableAop;
 import dtm.di.annotations.boot.ApplicationBoot;
 import dtm.di.annotations.boot.ApplicationEntryPoint;
+import dtm.di.annotations.boot.EnableMainThreadWorker;
 import dtm.di.annotations.boot.LifecycleHook;
 import dtm.di.annotations.boot.OnBoot;
 import dtm.di.annotations.scanner.PackageScanIgnore;
@@ -19,6 +20,9 @@ import dtm.di.core.DependencyContainer;
 import dtm.di.core.ExceptionHandlerInvoker;
 import dtm.di.exceptions.CompositeBootException;
 import dtm.di.exceptions.InvalidBootThreadAcessEsception;
+import dtm.di.exceptions.MainThreadWorkerAccessException;
+import dtm.di.application.worker.MainThreadWorker;
+import dtm.di.application.worker.impl.DefaultMainThreadWorker;
 import dtm.di.exceptions.NewInstanceException;
 import dtm.di.exceptions.boot.InvalidBootException;
 import dtm.di.prototypes.ThrowableAction;
@@ -64,6 +68,12 @@ public class ManagedApplication {
     private final static AtomicReference<ExceptionHandlerInvoker> userControllerAdvice = new AtomicReference<>();
     private final static AtomicBoolean controllerAdviceScannerIsLoad = new AtomicBoolean(false);
     private static final AtomicBoolean shuttingDownAddRef = new AtomicBoolean(false);
+    private static final AtomicReference<DefaultMainThreadWorker> mainThreadWorkerRef = new AtomicReference<>();
+    private static volatile boolean mainThreadWorkerStaticAccess;
+    private static final AtomicBoolean applicationShutdownRequested = new AtomicBoolean(false);
+    private static final AtomicBoolean applicationClosed = new AtomicBoolean(false);
+    private static final CountDownLatch applicationCloseCompleted = new CountDownLatch(1);
+    private static final long APPLICATION_CLOSE_WAIT_SECONDS = 30;
 
 
     public static void doRun(){
@@ -109,6 +119,19 @@ public class ManagedApplication {
         dependencyContainerRef.set(getDependencyContainer());
         logInfo("DependencyContainer obtido");
 
+        configureMainThreadWorker();
+        try {
+            prepareAndRunBoot();
+        } catch (RuntimeException | Error e) {
+            stopMainThreadWorker();
+            throw e;
+        }
+
+        runMainThreadWorker();
+        logInfo("doRun() finalizado");
+    }
+
+    private static void prepareAndRunBoot(){
         getRunMethod();
         logInfo("Método @OnBoot encontrado: {}", runMethod.getName());
         if (throwableMethod != null) {
@@ -123,7 +146,64 @@ public class ManagedApplication {
 
         addGracefulShutdown();
         runAsync();
-        logInfo("doRun() finalizado");
+    }
+
+    private static void configureMainThreadWorker(){
+        EnableMainThreadWorker enableMainThreadWorker = bootableClass.getAnnotation(EnableMainThreadWorker.class);
+        if(enableMainThreadWorker == null) return;
+
+        DefaultMainThreadWorker worker = new DefaultMainThreadWorker(Thread.currentThread(), ManagedApplication::exceptionHandlerAction);
+        mainThreadWorkerStaticAccess = enableMainThreadWorker.staticCaller();
+        mainThreadWorkerRef.set(worker);
+
+        try {
+            getCurrentDependencyContainer().registerDependency(worker, false);
+        } catch (Exception e) {
+            worker.stop();
+            throw new InvalidBootException("Erro ao registrar MainThreadWorker no DependencyContainer", e);
+        }
+        logInfo("MainThreadWorker habilitado na thread {}", Thread.currentThread().getName());
+    }
+
+    private static void runMainThreadWorker(){
+        DefaultMainThreadWorker worker = mainThreadWorkerRef.get();
+        if(worker == null) return;
+
+        logInfo("MainThreadWorker aguardando tasks");
+        worker.runLoop();
+        logInfo("MainThreadWorker finalizado");
+
+        if(applicationShutdownRequested.get()){
+            closeApplication();
+        }
+    }
+
+    private static void stopMainThreadWorker(){
+        DefaultMainThreadWorker worker = mainThreadWorkerRef.get();
+        if(worker != null) worker.stop();
+    }
+
+    public static MainThreadWorker getMainThreadWorker(){
+        DefaultMainThreadWorker worker = mainThreadWorkerRef.get();
+        if(worker == null){
+            throw new MainThreadWorkerAccessException(MainThreadWorkerAccessException.Reason.NOT_ENABLED);
+        }
+        if(!mainThreadWorkerStaticAccess){
+            throw new MainThreadWorkerAccessException(MainThreadWorkerAccessException.Reason.STATIC_ACCESS_DISABLED);
+        }
+        return worker;
+    }
+
+    public static void shutdown(){
+        if(!applicationShutdownRequested.compareAndSet(false, true)) return;
+
+        DefaultMainThreadWorker worker = mainThreadWorkerRef.get();
+        if(worker != null && !worker.isTerminated()){
+            worker.shutdown();
+            return;
+        }
+
+        closeApplication();
     }
 
     public static DependencyContainer getCurrentDependencyContainer(){
@@ -337,6 +417,7 @@ public class ManagedApplication {
     }
 
     private static void invokeHooks(LifecycleHook.Event event) {
+        if (eventMethodMap == null) return;
         List<Method> methods = eventMethodMap.get(event);
 
         if (methods == null || methods.isEmpty()) return;
@@ -402,44 +483,52 @@ public class ManagedApplication {
                 throw new RuntimeException(e);
             }
         }, executor).whenComplete((res, ex) -> {
+            boolean bootFailed = true;
             try {
-                if (ex != null) {
-                    Throwable rootCause = getRootCause(ex);
-                    exception.set(rootCause);
-                    logError("Erro durante carregamento assíncrono: {}", rootCause.getMessage(), rootCause);
-                }else{
-                    defineExceptionHandler(true);
-                    invokeHooks(LifecycleHook.Event.AFTER_CONTAINER_LOAD);
-                    logLifecycle("STARTUP_METHOD", true);
-                    runSchedulerAsync();
-                    runStarterMethod(dependencyContainer);
-                    runApplicationRunners(dependencyContainer);
-                    logLifecycle("STARTUP_METHOD", false);
-                    invokeHooks(LifecycleHook.Event.AFTER_STARTUP_METHOD);
-                }
-            } catch (Exception e) {
-                Throwable rootCause = getRootCause(e);
-                exception.set(rootCause);
-                logError("Erro ao executar método @OnBoot: {}", rootCause.getMessage(), rootCause);
-            }finally {
-                invokeHooks(LifecycleHook.Event.AFTER_ALL);
-                logLifecycle("BOOT_COMPLETE", false);
-                executor.shutdown();
+                completeBoot(ex, exception, dependencyContainer, executor);
+                bootFailed = exception.get() != null || compositeErrorRef.get() != null;
+            } finally {
+                if (bootFailed) stopMainThreadWorker();
             }
-
-
-            if (exception.get() != null) {
-                Throwable t = exception.get();
-                exceptionHandlerAction(Thread.currentThread(), new InvalidBootException("Erro durante boot da aplicação", t));
-            }else if(compositeErrorRef.get() != null){
-                CompositeBootException compositeBootException = compositeErrorRef.get();
-                if(compositeBootException.hasMultipleErrors()){
-                    exceptionHandlerAction(Thread.currentThread(), compositeBootException);
-                }
-                exceptionHandlerAction(Thread.currentThread(), compositeBootException.getFirstError());
-            }
-
         });
+    }
+
+    private static void completeBoot(Throwable ex, AtomicReference<Throwable> exception, DependencyContainer dependencyContainer, ExecutorService executor){
+        try {
+            if (ex != null) {
+                Throwable rootCause = getRootCause(ex);
+                exception.set(rootCause);
+                logError("Erro durante carregamento assíncrono: {}", rootCause.getMessage(), rootCause);
+            }else{
+                defineExceptionHandler(true);
+                invokeHooks(LifecycleHook.Event.AFTER_CONTAINER_LOAD);
+                logLifecycle("STARTUP_METHOD", true);
+                runSchedulerAsync();
+                runStarterMethod(dependencyContainer);
+                runApplicationRunners(dependencyContainer);
+                logLifecycle("STARTUP_METHOD", false);
+                invokeHooks(LifecycleHook.Event.AFTER_STARTUP_METHOD);
+            }
+        } catch (Exception e) {
+            Throwable rootCause = getRootCause(e);
+            exception.set(rootCause);
+            logError("Erro ao executar método @OnBoot: {}", rootCause.getMessage(), rootCause);
+        }finally {
+            invokeHooks(LifecycleHook.Event.AFTER_ALL);
+            logLifecycle("BOOT_COMPLETE", false);
+            executor.shutdown();
+        }
+
+        if (exception.get() != null) {
+            Throwable t = exception.get();
+            exceptionHandlerAction(Thread.currentThread(), new InvalidBootException("Erro durante boot da aplicação", t));
+        }else if(compositeErrorRef.get() != null){
+            CompositeBootException compositeBootException = compositeErrorRef.get();
+            if(compositeBootException.hasMultipleErrors()){
+                exceptionHandlerAction(Thread.currentThread(), compositeBootException);
+            }
+            exceptionHandlerAction(Thread.currentThread(), compositeBootException.getFirstError());
+        }
     }
 
     private static void runSchedulerAsync(){
@@ -775,24 +864,44 @@ public class ManagedApplication {
         if (!shuttingDownAddRef.compareAndSet(false, true))return;
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-            logLifecycle("SHUTDOWN_START", true);
-
-            try {
-                invokeHooks(LifecycleHook.Event.ON_CLOSE);
-                stopSchedulerGracefully();
-
-                DependencyContainer dependencyContainer = dependencyContainerRef.get();
-                if(dependencyContainer != null){
-                    dependencyContainer.unload();
-                }
-            } catch (Exception e) {
-                logError("Erro durante graceful shutdown: {}", e.getMessage(), e);
-            } finally {
-                logLifecycle("SHUTDOWN_COMPLETE", false);
-            }
-
+            stopMainThreadWorker();
+            closeApplication();
         }, "GracefulShutdownHook"));
 
+    }
+
+    private static void closeApplication() {
+        if (!applicationClosed.compareAndSet(false, true)) {
+            awaitApplicationClose();
+            return;
+        }
+
+        logLifecycle("SHUTDOWN_START", true);
+        try {
+            invokeHooks(LifecycleHook.Event.ON_CLOSE);
+            stopSchedulerGracefully();
+
+            DependencyContainer dependencyContainer = dependencyContainerRef.get();
+            if(dependencyContainer != null){
+                dependencyContainer.unload();
+            }
+        } catch (Exception e) {
+            logError("Erro durante graceful shutdown: {}", e.getMessage(), e);
+        } finally {
+            stopMainThreadWorker();
+            logLifecycle("SHUTDOWN_COMPLETE", false);
+            applicationCloseCompleted.countDown();
+        }
+    }
+
+    private static void awaitApplicationClose() {
+        try {
+            if (!applicationCloseCompleted.await(APPLICATION_CLOSE_WAIT_SECONDS, TimeUnit.SECONDS)) {
+                logWarn("Encerramento da aplicação não concluiu em {}s", APPLICATION_CLOSE_WAIT_SECONDS);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static final long SCHEDULER_SHUTDOWN_TIMEOUT_SECONDS = 5;
