@@ -72,4 +72,14 @@ class GenericWrapperResolutionTest {
         assertNotNull(consumer.referenceFoo());
         assertInstanceOf(FooProcessor.class, consumer.referenceFoo().get());
     }
+
+    @Test
+    @DisplayName("6. Map de tipo generico filtra pelo argumento generico")
+    void beanMapFiltersByGenericArgument() {
+        GenericWrapperConsumer consumer = container.getDependency(GenericWrapperConsumer.class);
+
+        assertNotNull(consumer.mapFoo());
+        assertEquals(1, consumer.mapFoo().size());
+        assertInstanceOf(FooProcessor.class, consumer.mapFoo().get("fooProcessor"));
+    }
 }

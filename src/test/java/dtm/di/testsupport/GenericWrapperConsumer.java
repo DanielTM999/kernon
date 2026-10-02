@@ -8,6 +8,7 @@ import dtm.di.prototypes.CompositeDependency;
 import dtm.di.prototypes.LazyDependency;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 @Singleton
@@ -29,6 +30,13 @@ public class GenericWrapperConsumer {
 
     @Inject
     private AtomicReference<GenericProcessor<FooPayload>> referenceFoo;
+
+    @Inject
+    private Map<String, GenericProcessor<FooPayload>> mapFoo;
+
+    public Map<String, GenericProcessor<FooPayload>> mapFoo() {
+        return mapFoo;
+    }
 
     public LazyDependency<GenericProcessor<FooPayload>> lazyFoo() {
         return lazyFoo;

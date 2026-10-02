@@ -6,8 +6,11 @@ import dtm.di.prototypes.async.AsyncComponent;
 
 import java.lang.ref.SoftReference;
 import java.lang.ref.WeakReference;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -55,6 +58,18 @@ public final class WrapperTypes {
 
     public static boolean isEagerWrapper(Class<?> rawType) {
         return rawType != null && EAGER_WRAPPERS.contains(rawType);
+    }
+
+    public static boolean isBeanMap(Type type) {
+        if (!(type instanceof ParameterizedType parameterized)) return false;
+        if (!Map.class.equals(parameterized.getRawType())) return false;
+
+        Type[] arguments = parameterized.getActualTypeArguments();
+        return arguments.length == 2 && String.class.equals(arguments[0]);
+    }
+
+    public static Type beanMapValueType(Type type) {
+        return ((ParameterizedType) type).getActualTypeArguments()[1];
     }
 
     public static Set<Class<?>> all() {

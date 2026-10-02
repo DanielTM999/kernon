@@ -1970,6 +1970,11 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         for (int depth = 0; depth < GRAPH_UNWRAP_DEPTH_LIMIT; depth++) {
             if (!(current instanceof ParameterizedType parameterized)) return current;
 
+            if (WrapperTypes.isBeanMap(parameterized)) {
+                current = WrapperTypes.beanMapValueType(parameterized);
+                continue;
+            }
+
             Class<?> raw = GenericTypes.raw(parameterized);
             if (!WrapperTypes.isEagerWrapper(raw)) return current;
 
@@ -1980,6 +1985,14 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
 
         return current;
+    }
+
+    private boolean isMultiBeanInjection(Type declaredType) {
+        if (WrapperTypes.isBeanMap(declaredType)) return true;
+        if (!(declaredType instanceof ParameterizedType parameterized)) return false;
+
+        Class<?> raw = GenericTypes.raw(parameterized);
+        return WrapperTypes.isBeanCollection(raw) || CompositeDependency.class.equals(raw);
     }
 
     private Type unwrapAsyncComponent(Type declaredType) {
@@ -2010,9 +2023,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             qualifierElement = getQualifierName(parameter);
         }
 
+        boolean ignoreQualifier = isMultiBeanInjection(declaredType);
         Set<Class<?>> byQualifier = new HashSet<>();
         for (Class<?> serviceClass : candidates) {
-            if (serviceIndex.qualifierOf(serviceClass).equalsIgnoreCase(qualifierElement)) {
+            if (ignoreQualifier || serviceIndex.qualifierOf(serviceClass).equalsIgnoreCase(qualifierElement)) {
                 byQualifier.add(serviceClass);
             }
         }
@@ -2486,7 +2500,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             return wrapInContainer(rawType, null, extractRawClass(genericType), genericType, qualifier, warn);
         }
 
-        if (WrapperTypes.isBeanCollection(rawType) || CompositeDependency.class.equals(rawType)) {
+        if (WrapperTypes.isBeanCollection(rawType) || Map.class.equals(rawType) || CompositeDependency.class.equals(rawType)) {
             return wrapInContainer(rawType, null, extractRawClass(genericType), genericType, qualifier, warn);
         }
 
@@ -2500,6 +2514,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
         }
 
         Class<?> nextRaw = extractRawClass(paramType);
+
+        if (WrapperTypes.isBeanMap(paramType)) {
+            return getParamObject(Map.class, WrapperTypes.beanMapValueType(paramType), element, false, instance, !warn);
+        }
 
         if (!WrapperTypes.isWrapper(nextRaw)) {
             return resolveDependency(type, qualifier, () -> warn, describeInjectionOrigin(element, instance));
@@ -2516,7 +2534,7 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private void validateTerminalType(Class<?> nextRaw, Type innerType, Object instance) {
-        if (!WrapperTypes.isWrapper(GenericTypes.raw(innerType))) {
+        if (!WrapperTypes.isWrapper(GenericTypes.raw(innerType)) && !WrapperTypes.isBeanMap(innerType)) {
             return;
         }
 
@@ -2561,6 +2579,10 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
             return containerType.equals(Set.class) ? new LinkedHashSet<>(beans) : new ArrayList<>(beans);
         }
 
+        if (containerType.equals(Map.class)) {
+            return getDependencyMapSelf(targetClass, targetType);
+        }
+
         if (containerType.equals(AtomicReference.class)) return new AtomicReference<>(resolvedInner);
         if (containerType.equals(WeakReference.class)) return new WeakReference<>(resolvedInner);
         if (containerType.equals(SoftReference.class)) return new SoftReference<>(resolvedInner);
@@ -2569,17 +2591,62 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
     }
 
     private <T> List<T> getDependencyListSelf(Class<T> reference, Type elementType) {
-        List<Dependency> candidates = allCandidatesOf(reference);
+        return collectionCandidatesOf(reference, elementType).stream()
+                .map(dependency -> castDependency(reference, dependency))
+                .filter(Objects::nonNull)
+                .toList();
+    }
 
+    private <T> Map<String, T> getDependencyMapSelf(Class<T> reference, Type elementType) {
+        List<Dependency> candidates = collectionCandidatesOf(reference, elementType);
+
+        Map<String, List<Dependency>> byPreferredKey = new HashMap<>();
+        for (Dependency dependency : candidates) {
+            byPreferredKey.computeIfAbsent(beanMapKeyOf(dependency), key -> new ArrayList<>()).add(dependency);
+        }
+
+        Map<String, T> beans = new TreeMap<>();
+        byPreferredKey.forEach((preferredKey, dependencies) -> {
+            for (Dependency dependency : dependencies) {
+                T bean = castDependency(reference, dependency);
+                if (bean == null) continue;
+
+                String key = dependencies.size() == 1 ? preferredKey : dependency.getDependencyClass().getName();
+                String uniqueKey = key;
+                for (int suffix = 2; beans.containsKey(uniqueKey); suffix++) {
+                    uniqueKey = key + "#" + suffix;
+                }
+                beans.put(uniqueKey, bean);
+            }
+        });
+
+        return new LinkedHashMap<>(beans);
+    }
+
+    private List<Dependency> collectionCandidatesOf(Class<?> reference, Type elementType) {
         boolean filterByGenericArgument = genericResolutionEnabled.get()
                 && elementType instanceof ParameterizedType
                 && !GenericTypes.hasWildcard(elementType);
 
-        return candidates.stream()
+        return allCandidatesOf(reference).stream()
                 .filter(dependency -> !filterByGenericArgument || matchesGenerically(elementType, dependency))
-                .map(dependency -> castDependency(reference, dependency))
-                .filter(Objects::nonNull)
                 .toList();
+    }
+
+    private String beanMapKeyOf(Dependency dependency) {
+        String qualifier = dependency.getQualifier();
+        if (qualifier != null && !qualifier.isBlank() && !"default".equals(qualifier) && !qualifier.startsWith("$primary$")) {
+            return qualifier;
+        }
+        return decapitalize(dependency.getDependencyClass().getSimpleName());
+    }
+
+    private String decapitalize(String name) {
+        if (name == null || name.isEmpty()) return name;
+        if (name.length() > 1 && Character.isUpperCase(name.charAt(0)) && Character.isUpperCase(name.charAt(1))) {
+            return name;
+        }
+        return Character.toLowerCase(name.charAt(0)) + name.substring(1);
     }
 
     private <T> T castDependency(Class<T> reference, Dependency dependency) {
@@ -2684,6 +2751,9 @@ public class DependencyContainerStorage implements DependencyContainer, ClassFin
 
     private ParamtrizedObject extractType(Class<?> rawType, Type genericType){
         if (genericType instanceof ParameterizedType paramType) {
+            if (WrapperTypes.isBeanMap(paramType)) {
+                return new ParamtrizedObject(Map.class, WrapperTypes.beanMapValueType(paramType), true, genericType);
+            }
             Type[] typeArgs = paramType.getActualTypeArguments();
             if (WrapperTypes.isWrapper(rawType) && typeArgs.length == 1) {
                 return new ParamtrizedObject(rawType, typeArgs[0], true, genericType);
