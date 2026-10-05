@@ -6,8 +6,4 @@ before_install:
   - sdk use java 21.0.11-tem
 
 install:
-  - MVNW_VERBOSE=true ./mvnw -v || true
-  - find "${MAVEN_USER_HOME:-$HOME/.m2}/wrapper/dists" -maxdepth 6 -type f \( -name 'mvn' -o -name 'plexus-classworlds*.jar' \) -print || true
-  - JAR=$(find "${MAVEN_USER_HOME:-$HOME/.m2}/wrapper/dists" -name 'plexus-classworlds*.jar' -print -quit); ls -l "$JAR"; unzip -t "$JAR" | tail -1; "$JAVA_HOME/bin/java" -cp "$JAR" org.codehaus.plexus.classworlds.launcher.Launcher -version || true
-  - MVN=$(find "${MAVEN_USER_HOME:-$HOME/.m2}/wrapper/dists" -path '*/bin/mvn' -print -quit); sh -x "$MVN" -v || true
   - ./mvnw -B install -DskipTests
