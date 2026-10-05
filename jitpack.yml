@@ -2,4 +2,6 @@ jdk:
   - openjdk21
 
 install:
+  - MVNW_VERBOSE=true ./mvnw -v || true
+  - find "${MAVEN_USER_HOME:-$HOME/.m2}/wrapper/dists" -maxdepth 6 -type f \( -name 'mvn' -o -name 'plexus-classworlds*.jar' \) -print || true
   - ./mvnw -B install -DskipTests
