@@ -159,6 +159,40 @@ public class DefaultMainThreadWorker implements MainThreadWorker {
             lock.unlock();
         }
     }
+    
+    @Override
+	public <T> T callAndAwaitOnMainThread(Callable<T> task) {
+		Objects.requireNonNull(task, "task não pode ser null");
+		if (isMainThread()) {
+		      ensureAccepting();
+
+            try {
+                return task.call();
+            } catch (RuntimeException | Error e) {
+                throw e;
+            } catch (Exception e) {
+                throw new CompletionException(e);
+            }
+		}
+		
+		 CompletableFuture<T> completion = callOnMainThread(task);
+
+        try {
+            return completion.join();
+        } catch (CompletionException e) {
+            Throwable cause = (e.getCause() != null) ? e.getCause() : e;
+    
+            if (cause instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+    
+            if (cause instanceof Error error) {
+                throw error;
+            }
+    
+            throw e;
+        }
+	}
 
     public void runLoop() {
         if(!isMainThread()){

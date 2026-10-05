@@ -12,6 +12,8 @@ public interface MainThreadWorker {
 
     <T> CompletableFuture<T> callOnMainThread(Callable<T> task);
 
+    <T> T callAndAwaitOnMainThread(Callable<T> task);
+
     boolean isMainThread();
 
     void shutdown();
